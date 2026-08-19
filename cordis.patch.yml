@@ -1,0 +1,16 @@
+# dsh-stats-compact bundle patch: one loader row over the web profile.
+# The row name resolves from the profile's own node_modules where
+# `dsh plugin --profile web add <path>` installed this package.
+#
+# config(可选,默认 CNY):会话费用显示。
+#   currency: CNY | USD | EUR | custom
+#   exchangeRate: 1 USD = ? 显示币种(默认 7.2)
+#   decimals: 小数位数(默认 4)
+#   symbol: custom 币种时的符号(如 ¥)
+- insert:
+    - id: stats-compact
+      name: dsh-stats-compact
+      config:
+        currency: CNY
+        exchangeRate: 7.2
+        decimals: 4
