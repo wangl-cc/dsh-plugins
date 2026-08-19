@@ -21,6 +21,11 @@ export interface Rule {
   group?: number
   /** 剥离引号后的最小值长度,短的跳过(降噪)。 */
   minLength?: number
+  /**
+   * 匹配后的二次校验(仅内置规则可携带;loader config 是纯 JSON,给不了函数)。
+   * 用于 regex 精度不够的场景,如身份证号的 GB 11643 校验位。
+   */
+  validate?: (value: string) => boolean
 }
 
 export interface CompiledRule {
@@ -28,6 +33,7 @@ export interface CompiledRule {
   regex: RegExp
   group: number
   minLength: number
+  validate?: (value: string) => boolean
 }
 
 /** map.jsonl 一行的解析形态。 */
@@ -62,7 +68,7 @@ export function compileRules(rules: Rule[]): CompiledRule[] {
     } catch (error) {
       throw new Error(`dsh-vibeguard: invalid pattern for rule ${rule.name}: ${(error as Error).message}`)
     }
-    return { name: rule.name, regex, group: rule.group ?? 0, minLength: rule.minLength ?? 0 }
+    return { name: rule.name, regex, group: rule.group ?? 0, minLength: rule.minLength ?? 0, validate: rule.validate }
   })
 }
 
@@ -118,6 +124,7 @@ export function createEngine(rules: CompiledRule[], key: Uint8Array, existing: M
         const bare = groupValue.replace(/^["']|["']$/g, '')
         if (bare.length < rule.minLength) return match
         if (PLACEHOLDER_EXACT.test(bare)) return match
+        if (rule.validate !== undefined && !rule.validate(bare)) return match
         const { placeholder, isNew } = placeholderFor(bare, rule.name)
         redactions.push({ placeholder, value: bare, name: rule.name, isNew })
         if (rule.group > 0) {

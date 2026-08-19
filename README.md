@@ -29,9 +29,16 @@ dsh plugin --profile web add <本仓库路径>   # 开发期本地 link
 | `enabled` | `true` | 总开关 |
 | `rules` | `[]` | 自定义规则 `[{name, pattern, flags?, group?, minLength?}]`,排在内置规则之前,首条命中生效 |
 | `disabledBuiltinRules` | `[]` | 按 name 关闭内置规则 |
+| `enabledOptionalRules` | `[]` | 按 name 启用可选规则(PII 类,默认关闭) |
 | `denyPaths` | 见 src/config.ts | 命中即 deny 的敏感路径(`~` 展开) |
 | `redactUserMessages` | `true` | 是否脱敏用户消息 |
 | `inlineNotice` | `true` | 脱敏后 tool 结果尾部是否附标记 |
+
+**可选规则(默认关闭)**:`PII_CN_ID`(中国大陆身份证号,带 GB 11643 校验位验证)、`PII_CN_PHONE`(大陆手机号)。PII 与凭据风险类别不同——长数字 pattern 会误伤时间戳/随机 ID,且脱敏不可还原;如果这类数据正是你的工作内容,不要开。邮箱不收(git log 每条提交都带,误报无药可救)。
+
+```yaml
+enabledOptionalRules: [PII_CN_ID, PII_CN_PHONE]
+```
 
 规则示例:
 

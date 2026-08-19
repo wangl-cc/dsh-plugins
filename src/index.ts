@@ -22,11 +22,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { ConfigSchema, type PluginConfig } from './config'
 import { compileRules, createEngine, type AppliedRedaction, type Engine, type RedactResult } from './engine'
-import { BUILTIN_RULES } from './patterns'
+import { BUILTIN_RULES, OPTIONAL_RULES } from './patterns'
 import { appendMappings, defaultStorePaths, loadMappings, loadOrCreateKey, type StorePaths } from './store'
 
 export const name = 'vibeguard'
-
 /** 本地最小 Cordis 类型(与 dsh-stats-compact 同风格,不依赖类型包)。 */
 export interface CordisContext {
   on(event: string, listener: (...args: never[]) => unknown): void
@@ -77,7 +76,12 @@ export function apply(ctx: CordisContext, rawConfig?: PluginConfig): void {
   if (!config.enabled) return
 
   const disabled = new Set(config.disabledBuiltinRules)
-  const rules = compileRules([...config.rules, ...BUILTIN_RULES.filter((rule) => !disabled.has(rule.name))])
+  const optionalEnabled = new Set(config.enabledOptionalRules)
+  const rules = compileRules([
+    ...config.rules,
+    ...OPTIONAL_RULES.filter((rule) => optionalEnabled.has(rule.name)),
+    ...BUILTIN_RULES.filter((rule) => !disabled.has(rule.name)),
+  ])
 
   const paths: StorePaths = defaultStorePaths()
   const engine: Engine = createEngine(rules, loadOrCreateKey(paths), loadMappings(paths))

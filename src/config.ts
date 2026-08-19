@@ -28,6 +28,8 @@ export const ConfigSchema = z.object({
   rules: z.array(RuleSchema).default([]),
   /** 按 name 关闭内置规则。 */
   disabledBuiltinRules: z.array(z.string()).default([]),
+  /** 按 name 启用可选规则(默认关闭的 PII 类,见 src/patterns.ts OPTIONAL_RULES)。 */
+  enabledOptionalRules: z.array(z.string()).default([]),
   /** 命中即 deny 的敏感路径(子串匹配,~ 会展开为 home)。 */
   denyPaths: z
     .array(z.string())

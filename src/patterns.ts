@@ -79,6 +79,19 @@ export const BUILTIN_RULES: Rule[] = [
     name: 'SENDGRID_KEY',
     pattern: 'SG\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{30,}',
   },
+  // webhook / bot token:秘密嵌在 URL 或形态里,dotfiles 与配置常客。
+  {
+    name: 'SLACK_WEBHOOK_URL',
+    pattern: 'hooks\\.slack\\.com/services/T[A-Z0-9]{8,12}/B[A-Z0-9]{8,12}/[A-Za-z0-9]{20,}',
+  },
+  {
+    name: 'DISCORD_WEBHOOK_URL',
+    pattern: 'discord(?:app)?\\.com/api/webhooks/\\d{17,20}/[A-Za-z0-9_-]{50,}',
+  },
+  {
+    name: 'TELEGRAM_BOT_TOKEN',
+    pattern: '\\b\\d{8,10}:[A-Za-z0-9_-]{35}\\b',
+  },
   {
     name: 'JWT',
     pattern: 'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+',
@@ -120,5 +133,37 @@ export const BUILTIN_RULES: Rule[] = [
     flags: 'i',
     group: 1,
     minLength: 8,
+  },
+]
+
+/**
+ * 可选规则:默认关闭,loader config 的 enabledOptionalRules 按名启用。
+ *
+ * PII 与凭据的风险类别不同:凭据 pattern 在编码语境几乎零误报,而 PII
+ * 的 pattern(长数字)会吃时间戳/随机 ID,且脱敏不可还原——如果这些数据
+ * 正是工作内容(测试 fixture、校验逻辑调试),全开等于自残。邮箱干脆
+ * 不收(git log 每条提交都带,误报无药可救)。
+ */
+const CN_ID_WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
+const CN_ID_CHECK_CHARS = '10X98765432'
+
+/** GB 11643 校验位:加权和 mod 11。纯 regex 误报率高,校验位把随机数字通过率压到 ~1/11。 */
+export function isValidCnId(value: string): boolean {
+  if (!/^\d{17}[\dXx]$/.test(value)) return false
+  let sum = 0
+  for (let i = 0; i < 17; i += 1) sum += Number(value[i]) * CN_ID_WEIGHTS[i]
+  return CN_ID_CHECK_CHARS[sum % 11] === value[17].toUpperCase()
+}
+
+export const OPTIONAL_RULES: Rule[] = [
+  {
+    name: 'PII_CN_ID',
+    // 行政区划 6 位 + 合法出生日期段 + 3 位顺序码 + 校验码,再由 validate 验校验位。
+    pattern: '\\b\\d{6}(?:19|20)\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]\\b',
+    validate: isValidCnId,
+  },
+  {
+    name: 'PII_CN_PHONE',
+    pattern: '\\b1[3-9]\\d{9}\\b',
   },
 ]

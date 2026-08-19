@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHmac } from 'node:crypto'
-import { BUILTIN_RULES, compileRules, createEngine } from '../dist/core.js'
+import { BUILTIN_RULES, OPTIONAL_RULES, compileRules, createEngine } from '../dist/core.js'
 
 const key = new TextEncoder().encode('test-key-32-bytes-padding-000000')
 const rules = compileRules(BUILTIN_RULES)
@@ -116,4 +116,31 @@ function fresh() {
   assert.ok(!db.text.includes('p%40ss'))
 }
 
+
+
+// 11. webhook / bot token 内置规则。
+{
+  const e = fresh()
+  const slack = e.redact('url: https://hooks.slack.com/services/T01234ABCDE/B0BCDEFGHIJ/abcdefABCDEF0123456789ab')
+  assert.equal(slack.redactions[0].name, 'SLACK_WEBHOOK_URL')
+  const discord = e.redact('https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-abcd')
+  assert.equal(discord.redactions[0].name, 'DISCORD_WEBHOOK_URL')
+  const tg = e.redact('token: 123456789:AAEhBOweik5ad9rQXM65P0hssBlrfak9A8B')
+  assert.equal(tg.redactions[0].name, 'TELEGRAM_BOT_TOKEN')
+}
+
+// 12. PII 可选规则:默认不在内置集;启用后身份证验校验位、手机号直匹配。
+{
+  const e = fresh()
+  const off = e.redact('id 11010519491231002X phone 13812345678')
+  assert.equal(off.redactions.length, 0, 'PII 规则默认关闭')
+
+  const on = createEngine(compileRules([...OPTIONAL_RULES, ...BUILTIN_RULES]), key)
+  const id = on.redact('id: 11010519491231002X')
+  assert.equal(id.redactions[0].name, 'PII_CN_ID')
+  const bad = on.redact('id: 110105194912310021')
+  assert.equal(bad.redactions.length, 0, '校验位错误的身份证号不脱敏')
+  const phone = on.redact('phone: 13812345678')
+  assert.equal(phone.redactions[0].name, 'PII_CN_PHONE')
+}
 console.log('engine.mjs: all assertions passed')
