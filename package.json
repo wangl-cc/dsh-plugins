@@ -1,0 +1,45 @@
+{
+  "name": "dsh-vibeguard",
+  "version": "0.1.0",
+  "description": "Secret redaction for the DeepSeek Harness: replaces secrets with content-addressed __REDACTED_<NAME>_<hmac>__ placeholders before they reach the session log, so the LLM and telemetry never see raw values",
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "default": "./dist/index.js"
+    },
+    "./core": {
+      "default": "./dist/core.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml"
+  ],
+  "prepack": "pnpm build",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "rolldown": "^1.2.4",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "build": "rolldown -c",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && node test/engine.mjs && node test/store.mjs",
+    "prepublishOnly": "pnpm typecheck && pnpm test"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}
