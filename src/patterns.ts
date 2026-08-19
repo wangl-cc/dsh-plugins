@@ -16,8 +16,18 @@ import type { Rule } from './engine'
 
 export const BUILTIN_RULES: Rule[] = [
   // 私钥整块(含头尾行);vibeguard 只匹配头行,正文会漏,这里吃到 END。
+  // 按 armor 形态拆三条,具体在前、兜底在后(NAME 是脱敏后唯一存活的
+  // 语义线索,笼统的 PRIVATE_KEY 会把 OpenSSH/TLS/RSA 抹成一类)。
   {
-    name: 'PRIVATE_KEY',
+    name: 'OPENSSH_PRIVATE_KEY',
+    pattern: '-----BEGIN OPENSSH PRIVATE KEY-----[\\s\\S]*?-----END OPENSSH PRIVATE KEY-----',
+  },
+  {
+    name: 'PGP_PRIVATE_KEY',
+    pattern: '-----BEGIN PGP PRIVATE KEY BLOCK-----[\\s\\S]*?-----END PGP PRIVATE KEY BLOCK-----',
+  },
+  {
+    name: 'GENERIC_PEM_PRIVATE_KEY',
     pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----',
   },
   // 厂商结构性 token。

@@ -48,16 +48,22 @@ function fresh() {
   assert.equal(kimi.redactions[0].name, 'GENERIC_API_KEY')
 }
 
-// 5. 私钥整块(含正文)被一次替换。
+// 5. 私钥整块(含正文)按 armor 形态命名;三条规则首条命中生效。
 {
   const e = fresh()
   const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU=\n-----END OPENSSH PRIVATE KEY-----'
   const r = e.redact(`before\n${pem}\nafter`)
   assert.equal(r.redactions.length, 1)
-  assert.equal(r.redactions[0].name, 'PRIVATE_KEY')
+  assert.equal(r.redactions[0].name, 'OPENSSH_PRIVATE_KEY')
   assert.ok(!r.text.includes('b3BlbnNzaC1rZXktdjEAAAAABG5vbmU='))
   assert.ok(r.text.startsWith('before\n'))
   assert.ok(r.text.endsWith('\nafter'))
+
+  const rsa = e.redact('-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKzQ\n-----END RSA PRIVATE KEY-----')
+  assert.equal(rsa.redactions[0].name, 'GENERIC_PEM_PRIVATE_KEY')
+
+  const pgp = e.redact('-----BEGIN PGP PRIVATE KEY BLOCK-----\nxlFGBSd4AgAT\n-----END PGP PRIVATE KEY BLOCK-----')
+  assert.equal(pgp.redactions[0].name, 'PGP_PRIVATE_KEY')
 }
 
 // 6. kv 规则:保留键名,只替换值;短值跳过。
