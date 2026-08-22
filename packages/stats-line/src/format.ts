@@ -96,10 +96,11 @@ export function formatTokens(n: number): string {
   return `${scaled(n / 1e6)}M`
 }
 
-/** 紧凑时长:45.2s(<1 分钟)/ 2m42s。 */
+/** 紧凑时长:45.2s(<1 分钟)/ 2m42s;秒档舍入到 60 时升入分钟档。 */
 export function formatDuration(ms: number): string {
   const s = ms / 1e3
-  if (s < 60) return `${Math.round(s * 10) / 10}s`
+  const tenth = Math.round(s * 10) / 10
+  if (tenth < 60) return `${tenth}s`
   const whole = Math.round(s)
   return `${Math.floor(whole / 60)}m${whole % 60}s`
 }
@@ -128,13 +129,18 @@ export interface Currency {
   rate: number
 }
 
+/** 内置汇率表:在线查询失败时的兜底(2026-08 参考值,会随时间漂移)。 */
 export const CURRENCY_PRESETS: Record<string, Currency> = {
   CNY: { symbol: '¥', decimals: 4, rate: 7.2 },
   USD: { symbol: '$', decimals: 6, rate: 1 },
   EUR: { symbol: '€', decimals: 6, rate: 0.92 },
 }
 
-/** loader 行 config 的形状(仅宿主侧可得;浏览器端启动图不携带 config)。 */
+/**
+ * loader 行 config 的形状(仅宿主侧可得;浏览器端启动图不携带 config)。
+ * currency 为 ISO 4217 币种码;exchangeRate 是显式覆盖(钉死/离线用),
+ * 缺省时宿主端在线查询,内置表兜底。
+ */
 export interface PluginConfig {
   currency?: string
   exchangeRate?: number
@@ -142,9 +148,15 @@ export interface PluginConfig {
   symbol?: string
 }
 
-/** 解析币种设置(缺省 CNY)。 */
+/** 币种码归一:缺省 CNY,大写 ISO 4217;非三字母码原样返回(查 preset 用)。 */
+export function currencyCode(config: PluginConfig | undefined): string {
+  const raw = typeof config?.currency === 'string' && config.currency.length > 0 ? config.currency : 'CNY'
+  return /^[a-zA-Z]{3}$/.test(raw) ? raw.toUpperCase() : raw
+}
+
+/** 解析币种设置(缺省 CNY;rate 为内置表或显式覆盖,在线刷新由宿主端负责)。 */
 export function resolveCurrency(config: PluginConfig | undefined): Currency {
-  const kind = typeof config?.currency === 'string' && config.currency.length > 0 ? config.currency : 'CNY'
+  const kind = currencyCode(config)
   const preset = CURRENCY_PRESETS[kind] ?? { symbol: '$', decimals: 2, rate: 1 }
   const rate = Number(config?.exchangeRate)
   const decimals = Number(config?.decimals)
@@ -163,4 +175,110 @@ export function formatMoney(usdCost: number, currency: Currency): string {
   const fixed = value.toFixed(effective)
   const trimmed = fixed.includes('.') ? fixed.replace(/0+$/, '').replace(/\.$/, '') : fixed
   return currency.symbol + trimmed
+}
+
+/** 模板插值:'{a} x {b}' + {a:1,b:2} → '1 x 2';未知占位符原样保留。 */
+export function interpolate(template: string, params: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (match, key: string) => (key in params ? String(params[key]) : match))
+}
+
+/**
+ * 渲染声明式模板(stats line 自定义组件):'{name}' 占位符取自
+ * values(值是预格式化的显示串);引用了缺失值(undefined)的模板返回
+ * undefined——这就是声明式的条件显隐;值为空串的占位符(如 {cache})照常渲染。
+ */
+export function renderTemplate(template: string, values: Record<string, string | undefined>): string | undefined {
+  const refs = template.match(/\{(\w+)\}/g) ?? []
+  if (refs.some((ref) => values[ref.slice(1, -1)] === undefined)) return undefined
+  return interpolate(template, values as Record<string, string>)
+}
+
+// ── stats line 组件模型(设置 GUI 的可拖拽单元) ─────────────────────────
+
+/** 组件种类:内置数据组件 + 分隔符 + 自定义模板。 */
+export type StatsLineItemKind = 'counts' | 'llm' | 'tools' | 'ttft' | 'tps' | 'tokens' | 'cost' | 'sep' | 'custom'
+export type StatsLineSepSize = 'small' | 'big'
+
+/**
+ * 组件序列的一项。settings 文档里的完整形态(哨兵:'' = 未设置);
+ * 仅 sep 用 size,custom 用 template。cost 组件无属性——币种显示配置
+ * 在 session-cost 插件自己的命名空间里(费用数据的 owner)。
+ */
+export interface StatsLineItem {
+  kind: StatsLineItemKind
+  size: StatsLineSepSize
+  template: string
+}
+
+export const ITEM_KINDS: readonly StatsLineItemKind[] = ['counts', 'llm', 'tools', 'ttft', 'tps', 'tokens', 'cost', 'sep', 'custom']
+
+export function makeItem(kind: StatsLineItemKind, init?: Partial<StatsLineItem>): StatsLineItem {
+  return { kind, size: 'small', template: '', ...init }
+}
+
+/** 内置默认序列:大组间 '|',组内子项 '·'——与历史内置渲染视觉一致。 */
+export const DEFAULT_STATS_LINE_ITEMS: StatsLineItem[] = [
+  makeItem('counts'),
+  makeItem('sep', { size: 'big' }),
+  makeItem('llm'),
+  makeItem('sep'),
+  makeItem('tools'),
+  makeItem('sep', { size: 'big' }),
+  makeItem('ttft'),
+  makeItem('sep'),
+  makeItem('tps'),
+  makeItem('sep', { size: 'big' }),
+  makeItem('tokens'),
+  makeItem('sep', { size: 'big' }),
+  makeItem('cost'),
+]
+
+/** 防御性归一化任意 JSON 为组件项;非法输入返回 undefined(调用方过滤)。 */
+export function normalizeItem(raw: unknown): StatsLineItem | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const r = raw as Record<string, unknown>
+  if (typeof r.kind !== 'string' || !ITEM_KINDS.includes(r.kind as StatsLineItemKind)) return undefined
+  return {
+    kind: r.kind as StatsLineItemKind,
+    size: r.size === 'big' ? 'big' : 'small',
+    template: typeof r.template === 'string' ? r.template : '',
+  }
+}
+
+/** 渲染结果:文本段或分隔符(客户端分别包成 span)。 */
+export type StatsLinePiece = { type: 'text'; text: string } | { type: 'sep'; size: StatsLineSepSize }
+
+/**
+ * 组件序列 → 渲染片段。数据不可得的组件(parts 无此键)与引用缺失值的
+ * 自定义模板直接消失;分隔符随后收敛:边缘分隔符删除,相邻分隔符留大的。
+ */
+export function renderStatsLineItems(
+  items: StatsLineItem[],
+  parts: Record<string, string | undefined>,
+  values: Record<string, string | undefined>,
+): StatsLinePiece[] {
+  const pieces: StatsLinePiece[] = []
+  for (const item of items) {
+    if (item.kind === 'sep') {
+      pieces.push({ type: 'sep', size: item.size })
+      continue
+    }
+    const text = item.kind === 'custom' ? (item.template.trim() === '' ? undefined : renderTemplate(item.template, values)) : parts[item.kind]
+    if (text !== undefined) pieces.push({ type: 'text', text })
+  }
+  // 收敛:边缘删除 + 相邻留大(small < big)
+  const out: StatsLinePiece[] = []
+  for (const piece of pieces) {
+    const last = out[out.length - 1]
+    if (piece.type === 'sep') {
+      if (last === undefined) continue // 前缘
+      if (last.type === 'sep') {
+        if (piece.size === 'big') out[out.length - 1] = piece // 留大的
+        continue
+      }
+    }
+    out.push(piece)
+  }
+  while (out.length > 0 && out[out.length - 1].type === 'sep') out.pop() // 后缘
+  return out
 }

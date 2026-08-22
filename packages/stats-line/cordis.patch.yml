@@ -1,0 +1,24 @@
+# dsh-stats-line bundle patch: one loader row over the web profile.
+# The row name resolves from the profile's own node_modules where
+# `dsh plugin --profile web add <path>` installed this package.
+#
+# config(全部可选,缺省即可用;这里的值是 settings 命名空间 stats-line
+# 的 base 层——用户在 设置→插件→stats-line 或 settings.yaml 里的编辑会
+# 覆盖它,实时生效):
+#   ui: 声明式 stats line 定制——组件序列(数组简写)或对象全形
+#     { items, css }。非法配置整体回退默认。
+#     组件:counts / llm / tools / ttft / tps / tokens / cost(内置);
+#     sep(size: small '·' 或 big '|');custom(template 插值,占位符为
+#     预格式化显示值:{turns} {steps} {llm} {tools} {ttft} {tps} {input}
+#     {output} {cache} {cost})。数据不可得的组件不渲染,分隔符自动收敛。
+#     cost 组件的数据与币种配置来自 dsh-session-cost 插件(未安装则不渲染)。
+#     例:
+#       ui:
+#         - { kind: counts }
+#         - { kind: sep, size: big }
+#         - { kind: custom, template: '↑{input}{cache} ↓{output}' }
+#         - { kind: sep, size: big }
+#         - { kind: cost }
+- insert:
+    - id: stats-line
+      name: dsh-stats-line

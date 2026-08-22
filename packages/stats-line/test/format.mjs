@@ -8,6 +8,12 @@ import {
   formatMoney,
   formatTokens,
   formatTokensPerSecond,
+  interpolate,
+  renderTemplate,
+  renderStatsLineItems,
+  normalizeItem,
+  makeItem,
+  DEFAULT_STATS_LINE_ITEMS,
   resolveCurrency,
 } from '../dist/format.js'
 
@@ -26,6 +32,7 @@ check('formatTokens M 档', formatTokens(1200000) === '1.2M')
 // formatDuration:45.2s / 2m42s
 check('formatDuration 秒档', formatDuration(45200) === '45.2s')
 check('formatDuration 分钟档', formatDuration(162000) === '2m42s')
+check('formatDuration 舍入到 60s 升分钟档', formatDuration(59960) === '1m0s')
 
 // formatTokensPerSecond:<10 保留一位小数
 check('tps 高档取整', formatTokensPerSecond(45.4) === '45')
@@ -41,6 +48,33 @@ check('cacheHitPercent 零输入为 null', cacheHitPercent({ uncachedInputTokens
 check('缺省 CNY', resolveCurrency(undefined).symbol === '¥' && resolveCurrency(undefined).rate === 7.2)
 check('非法汇率回退', resolveCurrency({ currency: 'USD', exchangeRate: -1 }).rate === 1)
 check('custom 符号', resolveCurrency({ currency: 'custom', symbol: '€', exchangeRate: 0.9, decimals: 2 }).symbol === '€')
+check('币种码小写归一化为大写', resolveCurrency({ currency: 'eur' }).symbol === '€')
+
+// interpolate:占位符替换;未知占位符保留
+check('interpolate 替换', interpolate('{turns} 轮 · {steps} 步', { turns: 5, steps: 23 }) === '5 轮 · 23 步')
+check('interpolate 未知占位符保留', interpolate('{a}/{b}', { a: 1 }) === '1/{b}')
+
+// renderTemplate:引用缺失值的模板返回 undefined;空串占位符照常渲染
+const vals = { turns: '5', steps: '23', input: '8.4M', output: '68.8K', cache: '(97%)', cost: undefined }
+check('renderTemplate 缺失值丢弃', renderTemplate('费用 {cost}', vals) === undefined)
+check('renderTemplate 正常插值', renderTemplate('{turns} turns · {steps} steps', vals) === '5 turns · 23 steps')
+check('renderTemplate 空串占位符渲染', renderTemplate('↑{input}{cache}', { input: '8.4M', cache: '' }) === '↑8.4M')
+
+// renderStatsLineItems:不可得组件消失 + 分隔符收敛(边缘删除,相邻留大)
+const parts = { counts: '5 turns', llm: 'LLM 2m42s', tps: '45 tok/s', tokens: '↑8.4M ↓68.8K' }
+const pieceText = (p) => (p.type === 'sep' ? `sep:${p.size}` : p.text)
+const seq = [makeItem('counts'), makeItem('sep', { size: 'big' }), makeItem('llm'), makeItem('sep'), makeItem('tools'), makeItem('sep', { size: 'big' }), makeItem('tps')]
+check('缺失组件消失且小分隔符被大分隔符吸收', renderStatsLineItems(seq, parts, {}).map(pieceText).join(',') === '5 turns,sep:big,LLM 2m42s,sep:big,45 tok/s')
+check('边缘分隔符删除', renderStatsLineItems([makeItem('sep'), makeItem('counts'), makeItem('sep', { size: 'big' })], parts, {}).map(pieceText).join(',') === '5 turns')
+check('自定义模板插值', renderStatsLineItems([makeItem('custom', { template: 'T={turns}' })], {}, { turns: '5' })[0].text === 'T=5')
+check('自定义模板引用缺失值丢弃', renderStatsLineItems([makeItem('custom', { template: 'T={nope}' }), makeItem('counts')], parts, {}).length === 1)
+check('空模板自定义组件丢弃', renderStatsLineItems([makeItem('custom'), makeItem('counts')], parts, {}).length === 1)
+check('全部不可达为空', renderStatsLineItems([makeItem('cost'), makeItem('sep')], {}, {}).length === 0)
+
+// normalizeItem:非法输入丢弃,字段哨兵归一
+check('normalizeItem 非法 kind 丢弃', normalizeItem({ kind: 'bogus' }) === undefined && normalizeItem('x') === undefined)
+check('normalizeItem 字段归一', JSON.stringify(normalizeItem({ kind: 'cost', size: 'bogus', template: 3 })) === JSON.stringify(makeItem('cost')))
+check('默认序列首尾', DEFAULT_STATS_LINE_ITEMS[0].kind === 'counts' && DEFAULT_STATS_LINE_ITEMS.at(-1).kind === 'cost' && DEFAULT_STATS_LINE_ITEMS.length === 13)
 
 // formatMoney:汇率换算、小数裁剪、过小自动放宽
 check('formatMoney 换汇', formatMoney(0.5, { symbol: '¥', rate: 7.2, decimals: 4 }) === '¥3.6')

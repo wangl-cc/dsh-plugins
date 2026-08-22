@@ -1,47 +1,11 @@
 {
-  "name": "dsh-stats-compact",
-  "version": "0.2.0",
-  "description": "Compact replacement for the DeepSeek Harness web stats line: shadows id:stats in conversation.composer.dock with shorter labels and wrap-friendly layout, plus a per-provider era-based session cost projection",
+  "name": "dsh-plugins",
+  "private": true,
   "type": "module",
   "packageManager": "pnpm@11.22.0",
-  "main": "dist/index.js",
-  "exports": {
-    ".": {
-      "default": "./dist/index.js"
-    },
-    "./client": {
-      "default": "./dist/client.js"
-    },
-    "./format": {
-      "default": "./dist/format.js"
-    },
-    "./package.json": "./package.json"
-  },
-  "files": [
-    "dist",
-    "cordis.patch.yml"
-  ],
-  "dependencies": {
-    "zod": "^4.4.3"
-  },
-  "devDependencies": {
-    "@types/react": "^18.3.31",
-    "rolldown": "^1.2.4",
-    "typescript": "^5.9.3"
-  },
   "scripts": {
-    "build": "rolldown -c",
-    "typecheck": "tsc --noEmit",
-    "test": "pnpm build && node test/session-cost.mjs && node test/format.mjs",
-    "prepublishOnly": "pnpm typecheck && pnpm test"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "platform": "web"
-    }
-  },
-  "license": "MIT"
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  }
 }

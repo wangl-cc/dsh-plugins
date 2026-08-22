@@ -1,37 +1,32 @@
-# dsh-stats-compact
+# dsh-plugins
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web plugin: a compact replacement for the conversation stats line, plus a per-provider, era-based session cost display.
+A monorepo of plugins for the [DeepSeek Harness](https://github.com/deepseek-ai/dsh) web UI.
 
-```text
-5 轮 · 23 步 | LLM 2m42s · 工具 45s | TTFT 1.2s · 45 tok/s | ↑8.4M(97%) ↓68.8K | ¥0.0082
-```
+## Packages
 
-- **Compact stats line** — shadows the official `id:stats` cell in `conversation.composer.dock` (priority -1, lowest wins; on crash the official cell takes back over). Same data sources as the official StatsLine, shorter labels, flex-wrap layout instead of single-line truncation.
-- **Session cost** — a host-side `sessionCost` projection bills every model call at its event time against per-provider **era tables** (`PROVIDERS` in `src/index.ts`):
-  - `metered` providers (currently `deepseek-official`, with the 2026-08 peak/off-peak schedule) show exact figures;
-  - `subscription` providers with published API list prices (currently `kimi-coding` / k3-256k) show an `≈` estimate of what the tokens would have cost;
-  - unknown providers/models are never billed at someone else's price sheet — nothing is shown.
-  - Price changes are append-only eras with effective dates; historical events always bill at the era in effect at their event time.
+| Package | What it provides |
+| --- | --- |
+| [`dsh-session-cost`](packages/session-cost) | The `sessionCost` session projection: era-based per-provider cost accounting (metered / subscription / unknown, UTC peak windows, cache-write pricing, long-context tiers) plus the `session-cost` settings namespace for the display currency. Host-side data only — no UI of its own beyond a settings card. |
+| [`dsh-stats-line`](packages/stats-line) | A compact replacement for the shipped stats line (shadows `id: stats` in `conversation.composer.dock`) with a drag-and-drop component composer in the settings GUI (`stats-line` namespace). The `cost` component is fed by the `sessionCost` projection and disappears gracefully when dsh-session-cost is not installed. |
+
+The two packages are decoupled by design: `dsh-stats-line` consumes the projection **by key** (`useProjection('sessionCost')`) and defensively validates the view shape — no code imports cross the package boundary.
 
 ## Install
 
 ```bash
-dsh plugin --profile web add github:wangl-cc/dsh-stats-compact#v0.2.0
+dsh plugin --profile web add <path-or-spec>   # per package, e.g. both of:
+dsh plugin --profile web add github:wangl-cc/dsh-plugins   # (npm specs after first release)
 ```
 
-Restart `dsh web` afterwards. Uninstall: `dsh plugin --profile web remove dsh-stats-compact`.
-
-For development, link a local checkout instead: `dsh plugin --profile web add ~/Repos/dsh/dsh-stats-compact`.
+Until the first npm release, install from a local checkout: `dsh plugin --profile web add ./packages/session-cost` (and likewise for `stats-line`). Each package's `cordis.patch.yml` documents its loader-row config; the recommended way to configure is the settings GUI (Settings → Plugins).
 
 ## Develop
 
 ```bash
 pnpm install
-pnpm build      # rolldown: src/*.ts → dist/ (committed; github: installs need it)
-pnpm test       # build + 61 assertions (session-cost + format)
-pnpm typecheck  # tsc --noEmit, strict
+pnpm build      # all packages (rolldown; dist/ is committed — CI checks freshness)
+pnpm test       # per-package Node test files (test the built dist/, not src/)
+pnpm typecheck  # tsc --noEmit per package
 ```
 
-`dist/` is committed on purpose: it is what `github:` installs resolve. CI fails if `dist/` drifts from `src/`.
-
-See [DESIGN.md](./DESIGN.md) for the architecture notes (slot shadowing, projection contract, era tables, timezone rules, release procedure).
+Client halves hot-reload when the profile links the checkout; host halves and config changes need a `dsh web` restart. Conventional Commits; per-package tags after release. Design rationale lives in [DESIGN.md](DESIGN.md); agent-facing conventions in [AGENTS.md](AGENTS.md).

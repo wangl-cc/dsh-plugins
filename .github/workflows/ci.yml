@@ -18,6 +18,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
-      # dist/ 提交进 git 作为 github: 安装源的产物;忘记重build就飘红。
+      # 各包 dist/ 提交进 git 作为 github: 安装源的产物;忘记重build就飘红。
       - name: dist is fresh
-        run: git diff --exit-code dist/
+        run: git diff --exit-code 'packages/*/dist/'
