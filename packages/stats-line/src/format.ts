@@ -17,6 +17,7 @@ export interface TokenUsage {
 export interface ChatNode {
   kind: string
   turn?: number
+  step?: number
   time: number
   callTime?: number | null
   timing?: {
@@ -89,11 +90,13 @@ export function deriveStats(nodes: ChatNode[]): DerivedStats {
 }
 
 /**
- * 最近一轮读数:从窗口末尾找第一个有完整计时的 assistant step(流式
- * 进行中的 step completedTime 未定,自然跳过)。sessionStats 投影不提供
- * 逐步数据,所以"最近一轮"组件始终从窗口节点读取,与走投影的平均值
- * 互不依赖;字段按指标各自可空(ttft 需要 stepStart+firstToken,tps
- * 还要 outputTokens)。
+ * 最近一轮读数:与官方 thread 末端的 deriveTurnMetrics 完全同构——取最后
+ * 一个 assistant node 所在的 turn,该轮全部 step 的 decode 加总成加权速率
+ * (tps = Σ outputTokens / Σ decodeMs),TTFT 取该轮首步;流式中未完成的
+ * step(completedTime 未定)自然不计入。sessionStats 投影不提供逐步数据,
+ * 所以"最近一轮"组件始终从窗口节点读取,与走投影的平均值互不依赖;
+ * 字段按指标各自可空(ttft 需要首步 stepStart+firstToken,tps 需要该轮
+ * 至少一个完整 step 的 decodeMs + outputTokens)。
  */
 export interface LastStepReading {
   ttftMs: number | null
@@ -102,13 +105,32 @@ export interface LastStepReading {
 }
 
 export function lastStepReading(nodes: ChatNode[]): LastStepReading | undefined {
+  let lastTurn: number | undefined
+  let firstStep = Number.POSITIVE_INFINITY
+  let ttftMs: number | null = null
+  let decodeMs = 0
+  let outputTokens = 0
+  let sampled = false
   for (let i = nodes.length - 1; i >= 0; i--) {
     const node = nodes[i]
     if (node === undefined || node.kind !== 'assistant') continue
+    const turn = node.turn ?? 0
+    if (lastTurn === undefined) lastTurn = turn
+    if (turn !== lastTurn) break
     const reading = assistantStepReading(node)
-    if (reading.ttftMs !== null || (reading.decodeMs !== null && reading.outputTokens !== null)) return reading
+    const step = node.step ?? 0
+    if (step < firstStep) {
+      firstStep = step
+      ttftMs = reading.ttftMs
+    }
+    if (reading.decodeMs !== null && reading.outputTokens !== null) {
+      decodeMs += reading.decodeMs
+      outputTokens += reading.outputTokens
+      sampled = true
+    }
   }
-  return undefined
+  if (lastTurn === undefined) return undefined
+  return { ttftMs, decodeMs: sampled ? decodeMs : null, outputTokens: sampled ? outputTokens : null }
 }
 
 /** 紧凑 token 计数:517 / 12.2K / 517K / 1.2M。 */

@@ -97,17 +97,21 @@ check('deriveStats TTFT 均值分子', stats.ttftMs === 500 && stats.ttftSteps =
 check('deriveStats decode', stats.decodeMs === 1500 && stats.decodeTokens === 500)
 check('deriveStats 空窗口', deriveStats([]).steps === 0)
 
-// lastStepReading:取末尾第一个有可用读数的 assistant step;流式中的 step
-// TTFT 已定即贡献 ttftLast,但 decode 未完成/无 usage 时 tpsLast 不渲染
-// (调用方按字段各自判空);ttft 与 tps 所需字段各自可空
-const asst = (timing, outputTokens) => ({ kind: 'assistant', turn: 1, time: 0, timing, usage: outputTokens === null ? null : { outputTokens } })
-const done = (ttft, decode, out) => asst({ stepStartTime: 0, firstTokenTime: ttft, completedTime: ttft + decode }, out)
-const streaming = asst({ stepStartTime: 0, firstTokenTime: 500, completedTime: NaN }, null)
-const last = lastStepReading([done(1_000, 40_000, 2_000), streaming])
-check('lastStepReading 流式 step 贡献 TTFT', last !== undefined && last.ttftMs === 500)
-check('lastStepReading 流式 step 无 tps 读数', last !== undefined && last.outputTokens === null)
-check('lastStepReading 取末尾完成 step', (() => { const l = lastStepReading([done(800, 10_000, 300), done(1_000, 40_000, 2_000)]); return l !== undefined && l.ttftMs === 1_000 && l.decodeMs === 40_000 && l.outputTokens === 2_000 })())
-const noTtft = lastStepReading([asst({ stepStartTime: null, firstTokenTime: 100, completedTime: 10_100 }, 500)])
+// lastStepReading:与官方 deriveTurnMetrics 同构——最后一个 assistant node
+// 所在 turn 的聚合:tps = 该轮 Σ outputTokens / Σ decodeMs(加权),TTFT 取
+// 该轮首步;流式未完成的 step 不计入;字段按指标各自可空
+const asst = (turn, step, timing, outputTokens) => ({ kind: 'assistant', turn, step, time: 0, timing, usage: outputTokens === null ? null : { outputTokens } })
+const done = (turn, step, ttft, decode, out) => asst(turn, step, { stepStartTime: 0, firstTokenTime: ttft, completedTime: ttft + decode }, out)
+const streaming = (turn, step) => asst(turn, step, { stepStartTime: 0, firstTokenTime: 500, completedTime: NaN }, null)
+// 最后一轮两个 step:加权 tps = 2500/50s = 50;TTFT 取首步 800
+const folded = lastStepReading([done(1, 1, 1_000, 10_000, 300), done(2, 1, 800, 10_000, 500), done(2, 2, 600, 40_000, 2_000)])
+check('lastStepReading 末轮多 step 加权', folded !== undefined && folded.decodeMs === 50_000 && folded.outputTokens === 2_500)
+check('lastStepReading TTFT 取末轮首步', folded !== undefined && folded.ttftMs === 800)
+// 末轮正在流式:首步 TTFT 已有,已完成 step 照常计入
+const live = lastStepReading([done(1, 1, 900, 10_000, 400), streaming(2, 1)])
+check('lastStepReading 流式轮 TTFT 已可用', live !== undefined && live.ttftMs === 500)
+check('lastStepReading 流式轮尚无 tps', live !== undefined && live.decodeMs === null && live.outputTokens === null)
+const noTtft = lastStepReading([asst(1, 1, { stepStartTime: null, firstTokenTime: 100, completedTime: 10_100 }, 500)])
 check('lastStepReading ttft 可空但 tps 可用', noTtft !== undefined && noTtft.ttftMs === null && noTtft.decodeMs === 10_000)
 check('lastStepReading 空窗口', lastStepReading([]) === undefined)
 check('lastStepReading 无 assistant', lastStepReading([{ kind: 'tool-result', time: 0, callTime: null }]) === undefined)

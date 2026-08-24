@@ -83,12 +83,36 @@ window.__ModuleLoader__.load({
 			};
 		}
 		function lastStepReading(nodes) {
+			let lastTurn;
+			let firstStep = Number.POSITIVE_INFINITY;
+			let ttftMs = null;
+			let decodeMs = 0;
+			let outputTokens = 0;
+			let sampled = false;
 			for (let i = nodes.length - 1; i >= 0; i--) {
 				const node = nodes[i];
 				if (node === void 0 || node.kind !== "assistant") continue;
+				const turn = node.turn ?? 0;
+				if (lastTurn === void 0) lastTurn = turn;
+				if (turn !== lastTurn) break;
 				const reading = assistantStepReading(node);
-				if (reading.ttftMs !== null || reading.decodeMs !== null && reading.outputTokens !== null) return reading;
+				const step = node.step ?? 0;
+				if (step < firstStep) {
+					firstStep = step;
+					ttftMs = reading.ttftMs;
+				}
+				if (reading.decodeMs !== null && reading.outputTokens !== null) {
+					decodeMs += reading.decodeMs;
+					outputTokens += reading.outputTokens;
+					sampled = true;
+				}
 			}
+			if (lastTurn === void 0) return void 0;
+			return {
+				ttftMs,
+				decodeMs: sampled ? decodeMs : null,
+				outputTokens: sampled ? outputTokens : null
+			};
 		}
 		/** 紧凑 token 计数:517 / 12.2K / 517K / 1.2M。 */
 		function formatTokens(n) {
