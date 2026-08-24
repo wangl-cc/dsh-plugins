@@ -1,6 +1,6 @@
 # DESIGN.md — dsh-plugins 设计
 
-monorepo 里目前两个包:**dsh-session-cost**(host 端 `sessionCost` 投影 + 计价表 + 显示币种的 settings 命名空间)与 **dsh-stats-line**(stats line cell + 组件编排器 + `stats-line` 命名空间)。两者按投影 key 解耦:stats-line 只认 `'sessionCost'` 这个 key 和视图形状(防御性校验),不 import session-cost 的代码;session-cost 不知道谁在消费它。本文记录持久的设计决策;临时状态(本机安装、待办)在本地的 HANDOFF.md(不进 git)。与代码冲突时以代码为准。
+monorepo 里目前三个包:**dsh-session-cost**(host 端 `sessionCost` 投影 + 计价表 + 显示币种的 settings 命名空间)、**dsh-stats-line**(stats line cell + 组件编排器 + `stats-line` 命名空间)与 **dsh-vibeguard**(写日志前密钥脱敏 + `secret_exec` broker 工具;设计独立成文,见 `packages/vibeguard/DESIGN.md`)。前两者按投影 key 解耦:stats-line 只认 `'sessionCost'` 这个 key 和视图形状(防御性校验),不 import session-cost 的代码;session-cost 不知道谁在消费它。本文记录持久的设计决策;临时状态(本机安装、待办)在本地的 HANDOFF.md(不进 git)。与代码冲突时以代码为准。
 
 ## Stats line:slot shadowing
 
