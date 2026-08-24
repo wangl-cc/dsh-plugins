@@ -17,12 +17,12 @@ pnpm test        # 各包测试，自动先 build
 pnpm typecheck   # 各包 tsc --noEmit
 ```
 
-CI 跑 typecheck + test，并检查 dist/ 新鲜度（`git diff --exit-code 'packages/*/dist/'`，忘记重新 build 就飘红）。
+CI 跑 typecheck + test（测试自动先 build，产物正确性由测试断言兜底）。
 
 ## 规范
 
 - 测试测 dist/ 产物，不测 src/；改代码后必须重新 build 再测。
-- `dist/` 提交进 git（`github:` 安装源即产物）；vibeguard 例外，走 npm 发布路线，dist/ 不进 git、prepack 构建。
+- `dist/` 不进 git；三包统一走 npm 发布，`prepack` 负责构建，`prepublishOnly` 跑 typecheck + test。
 - host 产物的外部依赖（zod、`@deepseek-ai/*` 等）在 rolldown 配置里声明 external，不 bundle。
 - host/配置改动需重启 `dsh web` 生效；client 改动可 HMR。
 - 包间不互相 import 代码；跨包协作走投影 key 等运行时契约。

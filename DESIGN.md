@@ -42,8 +42,8 @@ stats-line 的用户面是**组件序列**:内置数据组件(`counts`/`llm`/`to
 ## 构建与分发
 
 - pnpm workspace(`packages/*`),每包独立 rolldown 三产物:host ESM(zod 等外置)、共享纯函数 ESM(session-cost 的 currency / stats-line 的 format,client 内联 + Node 测试复用)、client CJS(`__ModuleLoader__` 工厂包装由 banner/footer 生成,react 外置)。
-- **dist/ 提交进 git**:`github:` 安装源没有构建环节,dist 就是安装产物。CI 用 `git diff --exit-code 'packages/*/dist/'` 防漂移;`.gitattributes` 标 generated 折叠 diff。若将来发 npm,则撤回此策略(dist 改进 npm 包)。注意:`github:` spec 不支持子目录——monorepo 后正式分发走 npm(或 gitpkg),pre-release 期继续 `link:` 本地安装。
-- 发布 = 打 tag(每包独立:`<pkg>-vX.Y.Z`)。chezmoi 脚本(dotfiles 仓库)钉安装声明,是唯一安装声明层;升级以 dotfiles commit 形式接受审查。
+- **dist/ 不进 git**:三包统一走 npm 发布,`prepack` 在 pack/publish 时构建,`prepublishOnly` 跑 typecheck + test 把关;构建产物只属于 npm 包,仓库里不留生成物。pre-release 期本地开发继续 `link:` 安装(读本地构建产物,不受影响)。注:`github:` spec 不支持子目录,monorepo 形态下本就走不了 `github:` 分发。
+- 发布 = 打 tag(每包独立:`<pkg>-vX.Y.Z`)+ npm publish(首次发布时定义具体流程)。chezmoi 脚本(dotfiles 仓库)钉安装声明,是唯一安装声明层;升级以 dotfiles commit 形式接受审查。
 - client 改动可 HMR(profile 为 link: 时 build 即生效);host/配置改动需重启 `dsh web`。
 
 ## 已知限制
