@@ -21,6 +21,8 @@
 import os from 'node:os'
 import path from 'node:path'
 import { ConfigSchema, type PluginConfig } from './config'
+import { createSecretExecTool } from './broker'
+import { findDeniedPath } from './guard'
 import { compileRules, createEngine, type AppliedRedaction, type Engine, type RedactResult } from './engine'
 import { BUILTIN_RULES, OPTIONAL_RULES } from './patterns'
 import { appendMappings, defaultStorePaths, loadMappings, loadOrCreateKey, type StorePaths } from './store'
@@ -57,6 +59,8 @@ interface ToolResultLike {
 }
 
 const PROMPT_SECTION = `Some text in this conversation may contain redacted secrets as placeholders of the form \`__REDACTED_<NAME>_<hash>__\` (e.g. \`__REDACTED_API_KEY_3f9a1c2b4d5e__\`), produced by a local redaction layer before content is logged. Rules: (1) never try to guess, reconstruct, or invent the original value of a placeholder; (2) the same placeholder always refers to the same secret, across turns and sessions; (3) when a command or file genuinely needs the real secret, ask the user to provide it, or prefer indirection that keeps the secret out of the conversation (e.g. referencing an environment variable like \`$NAME\` in shell commands).`
+
+const PROMPT_SECTION_BROKER = ` When a shell command genuinely needs the real value of a redacted secret, use the secret_exec tool with the placeholder in the command: it resolves placeholders in subprocess memory at execution time (the user may be asked to approve each call) and redacts output before returning.`
 
 const INLINE_NOTICE = (count: number): string =>
   `\n[dsh-vibeguard: redacted ${count} secret value(s) above into __REDACTED_*__ placeholders; never guess or reconstruct their originals — ask the user when a real value is required]`
@@ -142,22 +146,33 @@ export function apply(ctx: CordisContext, rawConfig?: PluginConfig): void {
     return { kind: 'enter', messages }
   }) as never)
 
-  // 敏感路径访问控制。
+  // 敏感路径访问控制(字段感知,见 guard.ts)+ secret_exec 审批门槛。
   const denyList = expandDenyPaths(config.denyPaths)
   ctx.on('tools/pre-execute', (async (exec: ToolExecutionLike, next: () => Promise<unknown>) => {
-    let haystack = ''
-    try {
-      haystack = JSON.stringify(exec.arguments ?? null)
-    } catch {
-      haystack = ''
+    const denied = findDeniedPath(exec.arguments, denyList)
+    if (denied !== undefined) {
+      return { kind: 'deny', reason: `dsh-vibeguard: access to sensitive path denied (${denied})` }
     }
-    for (const denied of denyList) {
-      if (haystack.includes(denied)) {
-        return { kind: 'deny', reason: `dsh-vibeguard: access to sensitive path denied (${denied})` }
+    // broker 工具默认每次执行都要用户点头(approval 策略为 never 时自动拒绝)。
+    if (exec.name === 'secret_exec' && config.secretExec.requireApproval) {
+      return {
+        kind: 'ask',
+        reason: 'dsh-vibeguard: secret_exec resolves redacted placeholders to real secret values in a subprocess',
       }
     }
     return next()
   }) as never)
+
+  // broker 工具:解析占位符执行命令。
+  if (config.secretExec.enabled) {
+    ctx.inject(['tools'], (injected) => {
+      const tools = injected.tools as { register(def: Record<string, unknown>): () => void } | undefined
+      if (tools === undefined) return
+      const tool = createSecretExecTool({ engine, config: config.secretExec, persist })
+      if (typeof injected.effect === 'function') injected.effect(() => tools.register(tool))
+      else tools.register(tool)
+    })
+  }
 
   // 遥测出站兜底:深度遍历 JSON,字符串值过引擎。
   ctx.on('session-telemetry/record', ((record: Record<string, unknown>, next: () => Record<string, unknown>) => {
@@ -190,7 +205,12 @@ export function apply(ctx: CordisContext, rawConfig?: PluginConfig): void {
       | { section(section: { name: string; order: number; text: string }): () => void }
       | undefined
     if (systemPrompt === undefined) return
-    const register = (): (() => void) => systemPrompt.section({ name: 'vibeguard-redaction', order: 150, text: PROMPT_SECTION })
+    const register = (): (() => void) =>
+      systemPrompt.section({
+        name: 'vibeguard-redaction',
+        order: 150,
+        text: PROMPT_SECTION + (config.secretExec.enabled ? PROMPT_SECTION_BROKER : ''),
+      })
     if (typeof injected.effect === 'function') injected.effect(register)
     else register()
   })

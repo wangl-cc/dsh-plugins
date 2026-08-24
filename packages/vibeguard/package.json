@@ -33,7 +33,7 @@
   "scripts": {
     "build": "rolldown -c",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm build && node test/engine.mjs && node test/store.mjs",
+    "test": "pnpm build && node test/engine.mjs && node test/store.mjs && node test/broker.mjs && node test/guard.mjs",
     "prepublishOnly": "pnpm typecheck && pnpm test"
   },
   "dsh": {

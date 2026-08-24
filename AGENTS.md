@@ -14,7 +14,14 @@ packages/
     src/index.ts    # host 半:settings 命名空间注册(只有配置面)
     src/format.ts   # 共享纯函数:格式化、组件模型(items/renderStatsLineItems)、节点折叠、币种显示
     src/client.ts   # client 半(classic script,React.createElement,无 JSX):cell + 编排卡片
-每包:test/*.mjs 测 dist/ 构建产物,不测 src;dist/ 提交进 git;cordis.patch.yml 是 loader 行(附 config 文档注释)
+  vibeguard/      # dsh-vibeguard:写日志前密钥脱敏 + secret_exec broker 工具(纯 host,无 client 半)
+    src/engine.ts   # 规则编译 + redact(顺序应用)+ 占位符映射(resolve 供 broker)
+    src/patterns.ts # 内置规则 + OPTIONAL_RULES(PII 可选层,默认关)
+    src/broker.ts   # secret_exec ToolDefinition:占位符→子进程内存替换,输出双脱敏
+    src/guard.ts    # 字段感知的敏感路径 deny(findDeniedPath)
+    src/store.ts    # ~/.dsh/redaction/ 密钥与 map.jsonl
+    src/index.ts    # 接线:5 个 hook + 工具注册 + 提示词段
+每包:test/*.mjs 测 dist/ 构建产物,不测 src;dist/ 提交进 git(vibeguard 例外:npm 发布路线,dist 不进 git);cordis.patch.yml 是 loader 行(附 config 文档注释)
 根:pnpm-workspace.yaml、共享 CI、DESIGN.md(设计)、本文件(纪律)
 ```
 

@@ -38,6 +38,15 @@ export const ConfigSchema = z.object({
   redactUserMessages: z.boolean().default(true),
   /** 脱敏后的 tool 结果尾部是否附 inline 标记。 */
   inlineNotice: z.boolean().default(true),
+  /** broker 工具 secret_exec:解析占位符执行命令。requireApproval = 每次执行走 ask 审批。 */
+  secretExec: z
+    .object({
+      enabled: z.boolean().default(true),
+      requireApproval: z.boolean().default(true),
+      defaultTimeoutMs: z.number().int().positive().default(120000),
+      maxOutputChars: z.number().int().positive().default(200000),
+    })
+    .default({ enabled: true, requireApproval: true, defaultTimeoutMs: 120000, maxOutputChars: 200000 }),
 })
 
 export type PluginConfig = z.input<typeof ConfigSchema>

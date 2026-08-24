@@ -2,3 +2,5 @@
 export * from './engine'
 export * from './patterns'
 export * from './store'
+export * from './broker'
+export * from './guard'

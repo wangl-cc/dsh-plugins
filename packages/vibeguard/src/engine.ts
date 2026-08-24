@@ -75,6 +75,8 @@ export function compileRules(rules: Rule[]): CompiledRule[] {
 export interface Engine {
   redact(input: string): RedactResult
   placeholderFor(value: string, name: string): { placeholder: string; isNew: boolean }
+  /** 占位符 → 真值(broker 工具专用;模型侧永远不该拿到这个通道)。 */
+  resolve(placeholder: string): string | undefined
   /** 当前映射规模(测试与诊断用)。 */
   size(): number
 }
@@ -138,5 +140,5 @@ export function createEngine(rules: CompiledRule[], key: Uint8Array, existing: M
     return { text, redactions }
   }
 
-  return { redact, placeholderFor, size: () => byValue.size }
+  return { redact, placeholderFor, resolve: (placeholder: string) => byPlaceholder.get(placeholder), size: () => byValue.size }
 }
