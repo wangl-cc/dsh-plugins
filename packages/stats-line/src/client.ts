@@ -122,7 +122,9 @@ const zh = {
   llm: 'LLM {d}',
   tools: '工具 {d}',
   ttft: 'TTFT {d}',
+  ttftCombined: 'TTFT {last}(平均 {avg})',
   tps: '{tps} tok/s',
+  tpsCombined: '{last} tok/s(平均 {avg})',
   tokens: '↑{in}{suffix} ↓{out}',
   cacheSuffix: '({p}%)',
   estimated: '≈',
@@ -160,7 +162,9 @@ const en = {
   llm: 'LLM {d}',
   tools: 'Tools {d}',
   ttft: 'TTFT {d}',
+  ttftCombined: 'TTFT {last} (avg {avg})',
   tps: '{tps} tok/s',
+  tpsCombined: '{last} tok/s (avg {avg})',
   tokens: '↑{in} {suffix} ↓{out}',
   cacheSuffix: '({p}%)',
   estimated: '≈',
@@ -323,9 +327,9 @@ function buildValues(
   const avgTtft = stats !== undefined && stats.ttftSteps > 0 ? formatDuration(stats.ttftMs / stats.ttftSteps) : undefined
   const lastTtft = last !== undefined && last.ttftMs !== null ? formatDuration(last.ttftMs) : undefined
   if (lastTtft !== undefined || avgTtft !== undefined) {
-    const d = lastTtft !== undefined && avgTtft !== undefined ? `${lastTtft} (${avgTtft})` : (lastTtft ?? avgTtft ?? '')
-    parts.ttft = t('ttft', { d })
-    values.ttft = d
+    const d = lastTtft ?? avgTtft ?? ''
+    parts.ttft = lastTtft !== undefined && avgTtft !== undefined ? t('ttftCombined', { last: lastTtft, avg: avgTtft }) : t('ttft', { d })
+    values.ttft = parts.ttft
     if (lastTtft !== undefined) {
       parts.ttftLast = t('ttft', { d: lastTtft })
       values.ttftLast = lastTtft
@@ -334,9 +338,9 @@ function buildValues(
   const avgTps = stats !== undefined && stats.decodeMs > 0 ? formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3)) : undefined
   const lastTps = last !== undefined && last.decodeMs !== null && last.decodeMs > 0 && last.outputTokens !== null ? formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3)) : undefined
   if (lastTps !== undefined || avgTps !== undefined) {
-    const v = lastTps !== undefined && avgTps !== undefined ? `${lastTps} (${avgTps})` : (lastTps ?? avgTps ?? '')
-    parts.tps = t('tps', { tps: v })
-    values.tps = v
+    const v = lastTps ?? avgTps ?? ''
+    parts.tps = lastTps !== undefined && avgTps !== undefined ? t('tpsCombined', { last: lastTps, avg: avgTps }) : t('tps', { tps: v })
+    values.tps = parts.tps
     if (lastTps !== undefined) {
       parts.tpsLast = t('tps', { tps: lastTps })
       values.tpsLast = lastTps

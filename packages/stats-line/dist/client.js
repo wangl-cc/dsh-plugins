@@ -376,7 +376,9 @@ window.__ModuleLoader__.load({
 			llm: "LLM {d}",
 			tools: "工具 {d}",
 			ttft: "TTFT {d}",
+			ttftCombined: "TTFT {last}(平均 {avg})",
 			tps: "{tps} tok/s",
+			tpsCombined: "{last} tok/s(平均 {avg})",
 			tokens: "↑{in}{suffix} ↓{out}",
 			cacheSuffix: "({p}%)",
 			estimated: "≈",
@@ -414,7 +416,9 @@ window.__ModuleLoader__.load({
 			llm: "LLM {d}",
 			tools: "Tools {d}",
 			ttft: "TTFT {d}",
+			ttftCombined: "TTFT {last} (avg {avg})",
 			tps: "{tps} tok/s",
+			tpsCombined: "{last} tok/s (avg {avg})",
 			tokens: "↑{in} {suffix} ↓{out}",
 			cacheSuffix: "({p}%)",
 			estimated: "≈",
@@ -497,9 +501,11 @@ window.__ModuleLoader__.load({
 			const avgTtft = stats !== void 0 && stats.ttftSteps > 0 ? formatDuration(stats.ttftMs / stats.ttftSteps) : void 0;
 			const lastTtft = last !== void 0 && last.ttftMs !== null ? formatDuration(last.ttftMs) : void 0;
 			if (lastTtft !== void 0 || avgTtft !== void 0) {
-				const d = lastTtft !== void 0 && avgTtft !== void 0 ? `${lastTtft} (${avgTtft})` : lastTtft ?? avgTtft ?? "";
-				parts.ttft = t("ttft", { d });
-				values.ttft = d;
+				parts.ttft = lastTtft !== void 0 && avgTtft !== void 0 ? t("ttftCombined", {
+					last: lastTtft,
+					avg: avgTtft
+				}) : t("ttft", { d: lastTtft ?? avgTtft ?? "" });
+				values.ttft = parts.ttft;
 				if (lastTtft !== void 0) {
 					parts.ttftLast = t("ttft", { d: lastTtft });
 					values.ttftLast = lastTtft;
@@ -508,9 +514,11 @@ window.__ModuleLoader__.load({
 			const avgTps = stats !== void 0 && stats.decodeMs > 0 ? formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3)) : void 0;
 			const lastTps = last !== void 0 && last.decodeMs !== null && last.decodeMs > 0 && last.outputTokens !== null ? formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3)) : void 0;
 			if (lastTps !== void 0 || avgTps !== void 0) {
-				const v = lastTps !== void 0 && avgTps !== void 0 ? `${lastTps} (${avgTps})` : lastTps ?? avgTps ?? "";
-				parts.tps = t("tps", { tps: v });
-				values.tps = v;
+				parts.tps = lastTps !== void 0 && avgTps !== void 0 ? t("tpsCombined", {
+					last: lastTps,
+					avg: avgTps
+				}) : t("tps", { tps: lastTps ?? avgTps ?? "" });
+				values.tps = parts.tps;
 				if (lastTps !== void 0) {
 					parts.tpsLast = t("tps", { tps: lastTps });
 					values.tpsLast = lastTps;

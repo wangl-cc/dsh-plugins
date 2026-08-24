@@ -34,7 +34,11 @@
     "build": "rolldown -c",
     "typecheck": "tsc --noEmit",
     "test": "pnpm build && node test/session-cost.mjs",
+    "prepack": "pnpm build",
     "prepublishOnly": "pnpm typecheck && pnpm test"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dsh": {
     "bundle": {

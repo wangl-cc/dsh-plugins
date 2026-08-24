@@ -35,7 +35,11 @@
     "build": "rolldown -c",
     "typecheck": "tsc --noEmit",
     "test": "pnpm build && node test/settings.mjs && node test/format.mjs",
+    "prepack": "pnpm build",
     "prepublishOnly": "pnpm typecheck && pnpm test"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dsh": {
     "bundle": {

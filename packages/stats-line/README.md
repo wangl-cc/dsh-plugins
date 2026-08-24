@@ -3,7 +3,7 @@
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web plugin: a compact, fully composable replacement for the conversation stats line.
 
 ```text
-5 轮 · 23 步 | LLM 2m42s · 工具 45s | TTFT 0.9s (1.2s) · 53 (45) tok/s | ↑8.4M(97%) ↓68.8K | ≈¥0.0082
+5 轮 · 23 步 | LLM 2m42s · 工具 45s | TTFT 0.9s (avg 1.2s) · 53 tok/s (avg 45) | ↑8.4M(97%) ↓68.8K | ≈¥0.0082
 ```
 
 - **Compact stats line** — shadows the official `id:stats` cell in `conversation.composer.dock` (priority -1, lowest wins; on crash the official cell takes back over). Same data sources as the official StatsLine, shorter labels, flex-wrap layout instead of single-line truncation.

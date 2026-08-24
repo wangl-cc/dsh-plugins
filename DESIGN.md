@@ -21,7 +21,7 @@ monorepo 里目前三个包:**dsh-session-cost**(host 端 `sessionCost` 投影 +
 
 两个包各拥有一个 settings 命名空间,按用户面对的功能域命名,不用包名:**stats-line**(组件序列 `items` + `css`,dsh-stats-line)与 **session-cost**(`currency`/`exchangeRate`/`decimals`/`symbol`,dsh-session-cost)。共同的机制:值分层 **schemastery schema 默认(哨兵)< loader 行 config(base 层)< 用户层**;用户在 设置 → 插件 的卡片里编辑(`settings.plugin.item`,key = 命名空间),或直接编辑 `settings.yaml`,经 `settingsScope` 实时生效,不落盘重启。哨兵值(空串/0/-1)表示"未设置",回落到下一层。宿主端消费走 `ctx.inject(['settings'])` + **try/catch**(存量段落非法时 register 抛错,回落 base,GUI 卡片自动隐藏)。
 
-stats-line 的用户面是**组件序列**:内置数据组件(`counts`/`llm`/`tools`/`ttft`/`tps`/`ttftLast`/`tpsLast`/`tokens`/`cost`)。`ttft`/`tps` 显示**最近一轮为主、括号带窗口平均**(`0.9s (1.2s)`)——最近值反映当前服务状况,平均值当基线;最近读数不可得(投影路径/窗口折叠)退回纯平均。`*Last` 是纯最近变体。最近读数始终从窗口节点读取——sessionStats 投影不含逐步数据)、分隔符(`sep`,small '·' / big '|')与自定义模板组件(`custom`,`{placeholder}` 插值,占位符为预格式化显示值)。数据不可得的组件不渲染(包括未装 session-cost 时的 cost),**分隔符自动收敛**(边缘删除、相邻留大)——这就是声明式的条件显隐;设置 GUI 里的卡片是可拖拽编排器(拖动排序、点分隔符切大小),带示例数据实时预览。`css` 是高级区逃生舱。边界纪律:自定义模板只插值、无逻辑语法;新组件种类去改 client。
+stats-line 的用户面是**组件序列**:内置数据组件(`counts`/`llm`/`tools`/`ttft`/`tps`/`ttftLast`/`tpsLast`/`tokens`/`cost`)。`ttft`/`tps` 显示**最近一轮为主、平均值带标签缀后**(`TTFT 0.9s (avg 1.2s)` / `53 tok/s (avg 45)`——主值贴身带单位,括号隔开主值和单位太丑被否了)——最近值反映当前服务状况,平均值当基线;最近读数不可得(投影路径/窗口折叠)退回纯平均。`*Last` 是纯最近变体。最近读数始终从窗口节点读取——sessionStats 投影不含逐步数据)、分隔符(`sep`,small '·' / big '|')与自定义模板组件(`custom`,`{placeholder}` 插值,占位符为预格式化显示值)。数据不可得的组件不渲染(包括未装 session-cost 时的 cost),**分隔符自动收敛**(边缘删除、相邻留大)——这就是声明式的条件显隐;设置 GUI 里的卡片是可拖拽编排器(拖动排序、点分隔符切大小),带示例数据实时预览。`css` 是高级区逃生舱。边界纪律:自定义模板只插值、无逻辑语法;新组件种类去改 client。
 
 币种曾是 stats-line cost 组件项的属性;拆包后归还给费用数据的 owner(session-cost 命名空间)——消费方(stats-line)不该拥有数据源的显示配置。session-cost 宿主端从自己的命名空间驱动汇率解析(scope.watch → 即时重解析,见上节),解析结果随 view 下发,消费方无需 config 通道。
 
