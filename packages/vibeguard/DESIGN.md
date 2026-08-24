@@ -49,9 +49,11 @@ DSH 把"发给 LLM 的请求"定义为**会话日志的纯函数**,且在 `llm/s
 
 deny 匹配是**字段感知**的:只检查各工具的"目标"参数(`command`/`file_path`/`path`/`workdir`/`cwd`/`directory` 等),不对整个参数 JSON 做子串匹配。初版的全 JSON 匹配在实践中立刻误伤——编辑 README 时 new_string 提到 deny 路径字样即被拦;真正的访问语义在目标参数里。目录条目(尾斜杠)对"引用目录本身"的写法用 `value + '/'` 归一匹配,不扩大到兄弟路径。
 
-固有局限(有意的取舍):bash 命令是自由文本,`cat $X`、`cd … && cat …` 这类拼接可绕过子串匹配。deny 防的是"agent 顺手把凭据文件(`~/.dsh/.credentials.yaml`、`~/.dsh/redaction/`、`~/.ssh/id_*` 等,可配置)读进上下文",不是对抗性绕过;真正的兜底仍是 post-execute 脱敏。访问控制对本插件自身的 `~/.dsh/redaction/` 目录尤其重要:key 泄露 + 提供商侧日志 = 低熵秘密可被离线字典验证。
+固有局限(有意的取舍):bash 命令是自由文本,`cat $X`、`cd … && cat …` 这类拼接可绕过子串匹配。deny 防的是"agent 顺手读凭据文件",不是对抗性绕过;真正的兜底仍是 post-execute 脱敏。
 
-为什么不由 DSH 本体做:DSH 的访问控制是模式制沙箱(read-only / workspace-write / danger-full-access,OS 级执行)+ per-call 审批 + guard 扩展点,**没有 per-path deny**;本插件通过 `tools/pre-execute` waterfall 实现的就是 DSH 预留的接缝。默认列表里除 `~/.dsh/redaction/`(插件自保,不变量)外的条目性质上是用户策略,若 DSH 将来出正式的 per-path 策略配置,应迁过去。
+**deny 列表的构成(2026-07 收窄):** `~/.dsh/redaction/` 是硬编码的自保护不变量——HMAC key 在里面,且它是纯随机字节、不匹配任何脱敏规则,读进来会原样出境(key + 提供商侧日志 = 低熵秘密可被离线字典验证);config 删不掉它。初版默认列表的其余四条(`.credentials.yaml`、`.ssh/id_*`、`.aws/credentials`、`.netrc`)内容形状全被规则覆盖,deny 只是纵深冗余,已从默认值移除——它们性质上是用户策略,`denyPaths`(默认空)留给用户按需配置。
+
+为什么不由 DSH 本体做:DSH 的访问控制是模式制沙箱(read-only / workspace-write / danger-full-access,OS 级执行)+ per-call 审批 + guard 扩展点,**没有 per-path deny**;本插件通过 `tools/pre-execute` waterfall 实现的就是 DSH 预留的接缝。若 DSH 将来出正式的 per-path 策略配置,用户策略条目应迁过去,插件只保留自保护不变量。
 
 ## broker 工具:secret_exec(src/broker.ts)
 

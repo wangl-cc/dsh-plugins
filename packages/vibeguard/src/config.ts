@@ -30,10 +30,10 @@ export const ConfigSchema = z.object({
   disabledBuiltinRules: z.array(z.string()).default([]),
   /** 按 name 启用可选规则(默认关闭的 PII 类,见 src/patterns.ts OPTIONAL_RULES)。 */
   enabledOptionalRules: z.array(z.string()).default([]),
-  /** 命中即 deny 的敏感路径(子串匹配,~ 会展开为 home)。 */
-  denyPaths: z
-    .array(z.string())
-    .default(['~/.dsh/.credentials.yaml', '~/.dsh/redaction/', '~/.ssh/id_', '~/.aws/credentials', '~/.netrc']),
+  /** 额外 deny 的敏感路径(子串匹配目标参数字段,~ 会展开为 home)。
+   *  默认空:~/.dsh/redaction/ 的自我保护是硬编码不变量,其余内容形状
+   *  均被规则覆盖,路径级策略留给用户按需配置。 */
+  denyPaths: z.array(z.string()).default([]),
   /** 是否脱敏用户消息(agent/pre-step)。 */
   redactUserMessages: z.boolean().default(true),
   /** 脱敏后的 tool 结果尾部是否附 inline 标记。 */

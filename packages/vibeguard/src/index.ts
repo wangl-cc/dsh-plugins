@@ -154,7 +154,10 @@ export function apply(ctx: CordisContext, rawConfig?: PluginConfig): void {
   }) as never)
 
   // 敏感路径访问控制(字段感知,见 guard.ts)+ secret_exec 审批门槛。
-  const denyList = expandDenyPaths(config.denyPaths)
+  // ~/.dsh/redaction/ 是硬编码的自我保护不变量(HMAC key 是纯随机字节,
+  // 不匹配任何脱敏规则,读进来会原样出境;key 泄露 + 提供商日志 =
+  // 低熵秘密可被离线字典验证),config 删不掉它。
+  const denyList = [...expandDenyPaths(['~/.dsh/redaction/']), ...expandDenyPaths(config.denyPaths)]
   ctx.on('tools/pre-execute', (async (exec: ToolExecutionLike, next: () => Promise<unknown>) => {
     const denied = findDeniedPath(exec.arguments, denyList)
     if (denied !== undefined) {

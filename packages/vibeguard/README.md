@@ -9,7 +9,7 @@ sk-kimi-WFek…  →  __REDACTED_GENERIC_API_KEY_3f9a1c2b4d5e__
 ## 工作原理
 
 - **占位符是内容的纯函数**:`__REDACTED_<NAME>_<hmac12>__`,hmac12 = HMAC-SHA256(本机密钥, 原文) 前 12 位 hex。同一秘密在任何会话、重启前后都是同一占位符;不依赖会话/环境/计数器上下文。
-- **拦截点**:`tools/post-execute`(工具结果)、`agent/pre-step`(用户消息)、`tools/code-dispatch-log`(run_code 子调用日志)、`session-telemetry/record`(遥测兜底);外加 `tools/pre-execute` 对敏感路径(`~/.dsh/.credentials.yaml`、`~/.dsh/redaction/`、`~/.ssh/id_*` 等)直接 deny——匹配是字段感知的,只检查工具的目标参数(`command`/`file_path`/`path`/`workdir` 等),文档内容提到路径字样不误伤。
+- **拦截点**:`tools/post-execute`(工具结果)、`agent/pre-step`(用户消息)、`tools/code-dispatch-log`(run_code 子调用日志)、`session-telemetry/record`(遥测兜底);外加 `tools/pre-execute` 对敏感路径直接 deny——匹配是字段感知的,只检查工具的目标参数(`command`/`file_path`/`path`/`workdir` 等),文档内容提到路径字样不误伤。`~/.dsh/redaction/` 是硬编码的自保护不变量(HMAC key 在里面,且不匹配任何脱敏规则),其余路径级策略由 `denyPaths` 按需配置。
 - **告知模型**:注册一段常驻系统提示词,说明占位符语义(禁止猜测原值、同占位符恒同值、只在真值流经过的活会话里可兑现)。
 - **会话作用域还原**:映射只在内存里按会话分桶,进程死即蒸发;占位符可兑现 ⟺ 真值在本会话、本进程里真实流经过。模型需要**用**真值执行命令时走 `secret_exec`(见下)。
 
@@ -42,7 +42,7 @@ dsh plugin --profile web add <本仓库路径>   # 开发期本地 link
 | `rules` | `[]` | 自定义规则 `[{name, pattern, flags?, group?, minLength?}]`,排在内置规则之前,首条命中生效 |
 | `disabledBuiltinRules` | `[]` | 按 name 关闭内置规则 |
 | `enabledOptionalRules` | `[]` | 按 name 启用可选规则(PII 类,默认关闭) |
-| `denyPaths` | 见 src/config.ts | 命中即 deny 的敏感路径(`~` 展开) |
+| `denyPaths` | `[]` | 额外 deny 的敏感路径(`~` 展开;`~/.dsh/redaction/` 硬编码永 deny) |
 | `redactUserMessages` | `true` | 是否脱敏用户消息 |
 | `inlineNotice` | `true` | 脱敏后 tool 结果尾部是否附标记 |
 | `secretExec` | 见下 | broker 工具:`{enabled: true, requireApproval: true, defaultTimeoutMs: 120000, maxOutputChars: 200000}` |
