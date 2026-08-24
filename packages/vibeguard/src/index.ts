@@ -1,22 +1,24 @@
 /**
  * dsh-vibeguard host half:写日志前脱敏,出境前兜底。
  *
- * 四个事件钩子 + 一段常驻系统提示词:
+ * 四个事件钩子 + broker 工具 + 一段常驻系统提示词:
  *  - tools/post-execute:工具结果提交会话日志前,替换 content 文本块里
  *    的秘密(LLM 请求是会话日志的纯函数且深冻结,这是唯一的拦截点);
  *  - agent/pre-step:用户消息(粘贴的 key 不经过工具)进入 step 前替换;
- *  - tools/pre-execute:敏感路径访问控制(deny),唯一的语义拦截点;
- *    参数改写在 DSH 公开 API 里不存在,故本插件不做运行期还原;
+ *  - tools/pre-execute:敏感路径访问控制(deny,字段感知见 guard.ts),
+ *    以及 secret_exec 的 ask 审批门槛;
  *  - session-telemetry/record:第二条出境通道(遥测后端)的兜底重扫;
- *  - systemPrompt.section:告知模型占位符语义(禁止猜测原值、同占位符
- *    恒同值、需真值请用户提供或用 env 间接引用)。
+ *  - secret_exec(broker.ts):唯一的还原出口,按会话解析占位符;
+ *  - systemPrompt.section:告知模型占位符语义。
  *
  * 另挂 tools/code-dispatch-log:run_code 子调用的持久化日志副本走独立
  * waterfall,不拦它,子调用输出里的秘密会绕过 post-execute 落进日志。
  *
- * 作用域:tools/* 与 agent/* 事件是 scope 过滤派发,root 上下文监听可收
- * 所有 agent(与 dsh-tool-call-timeout-policy 同模式)。映射存储是全局
- * 单文件,不按会话分片(内容寻址使分片失去意义)。
+ * 作用域与映射:tools/* 与 agent/* 事件是 scope 过滤派发,root 上下文
+ * 监听可收所有 agent。映射按会话分桶(engine.ts):各挂点从
+ * exec.agent.id / payload.agent.id / dispatch.agent?.id 取会话标识;
+ * 拿不到的(遥测兜底)进匿名桶,脱敏生效但永不解析(fail-closed)。
+ * 占位符本身是全局纯函数(HMAC 持久 key),跨会话稳定与去重不受影响。
  */
 import os from 'node:os'
 import path from 'node:path'
@@ -25,10 +27,10 @@ import { createSecretExecTool } from './broker'
 import { findDeniedPath } from './guard'
 import { compileRules, createEngine, type AppliedRedaction, type Engine, type RedactResult } from './engine'
 import { BUILTIN_RULES, OPTIONAL_RULES } from './patterns'
-import { appendMappings, defaultStorePaths, loadMappings, loadOrCreateKey, type StorePaths } from './store'
+import { defaultStorePaths, loadOrCreateKey, type StorePaths } from './store'
 
 export const name = 'vibeguard'
-/** 本地最小 Cordis 类型(与 dsh-stats-compact 同风格,不依赖类型包)。 */
+/** 本地最小 Cordis 类型(与 monorepo 各包同风格,不依赖类型包)。 */
 export interface CordisContext {
   on(event: string, listener: (...args: never[]) => unknown): void
   inject(services: string[], callback: (ctx: CordisContext & Record<string, unknown>) => void): void
@@ -48,9 +50,14 @@ interface MessageLike {
   readonly source: unknown
 }
 
+interface AgentLike {
+  readonly id: string
+}
+
 interface ToolExecutionLike {
   readonly name: string
   readonly arguments: unknown
+  readonly agent?: AgentLike
 }
 
 interface ToolResultLike {
@@ -58,9 +65,9 @@ interface ToolResultLike {
   readonly content: TextLikeBlock[]
 }
 
-const PROMPT_SECTION = `Some text in this conversation may contain redacted secrets as placeholders of the form \`__REDACTED_<NAME>_<hash>__\` (e.g. \`__REDACTED_API_KEY_3f9a1c2b4d5e__\`), produced by a local redaction layer before content is logged. Rules: (1) never try to guess, reconstruct, or invent the original value of a placeholder; (2) the same placeholder always refers to the same secret, across turns and sessions; (3) when a command or file genuinely needs the real secret, ask the user to provide it, or prefer indirection that keeps the secret out of the conversation (e.g. referencing an environment variable like \`$NAME\` in shell commands).`
+const PROMPT_SECTION = `Some text in this conversation may contain redacted secrets as placeholders of the form \`__REDACTED_<NAME>_<hash>__\` (e.g. \`__REDACTED_API_KEY_3f9a1c2b4d5e__\`), produced by a local redaction layer before content is logged. Rules: (1) never try to guess, reconstruct, or invent the original value of a placeholder; (2) the same placeholder always refers to the same secret, across turns and sessions; (3) placeholders are resolvable only within the live session whose traffic actually contained the secret — after a restart they are permanently unresolvable, and placeholders quoted from other sessions or old logs will not resolve either.`
 
-const PROMPT_SECTION_BROKER = ` When a shell command genuinely needs the real value of a redacted secret, use the secret_exec tool with the placeholder in the command: it resolves placeholders in subprocess memory at execution time (the user may be asked to approve each call) and redacts output before returning.`
+const PROMPT_SECTION_BROKER = ` When a shell command genuinely needs the real value of a redacted secret, use the secret_exec tool with the placeholder in the command: it resolves placeholders from this session's in-memory map in subprocess memory at execution time (the user may be asked to approve each call) and redacts output before returning. If a placeholder does not resolve, ask the user to paste the value again — do not work around it.`
 
 const INLINE_NOTICE = (count: number): string =>
   `\n[dsh-vibeguard: redacted ${count} secret value(s) above into __REDACTED_*__ placeholders; never guess or reconstruct their originals — ask the user when a real value is required]`
@@ -88,33 +95,30 @@ export function apply(ctx: CordisContext, rawConfig?: PluginConfig): void {
   ])
 
   const paths: StorePaths = defaultStorePaths()
-  const engine: Engine = createEngine(rules, loadOrCreateKey(paths), loadMappings(paths))
-
-  const persist = (redactions: AppliedRedaction[]): void => {
-    const fresh = redactions.filter((r) => r.isNew)
-    if (fresh.length > 0) appendMappings(paths, fresh)
-  }
+  const engine: Engine = createEngine(rules, loadOrCreateKey(paths))
 
   /** 脱敏一组 content 块;未命中返回 null(调用侧走 next() 保持原样)。 */
-  const redactBlocks = (content: TextLikeBlock[]): { blocks: TextLikeBlock[]; count: number } | null => {
+  const redactBlocks = (
+    content: TextLikeBlock[],
+    session?: string,
+  ): { blocks: TextLikeBlock[]; count: number } | null => {
     let changed = false
     const all: AppliedRedaction[] = []
     const blocks = content.map((block) => {
       if (typeof block.text !== 'string' || block.text.length === 0) return block
-      const result: RedactResult = engine.redact(block.text)
+      const result: RedactResult = engine.redact(block.text, session)
       if (result.redactions.length === 0) return block
       changed = true
       all.push(...result.redactions)
       return { ...block, text: result.text }
     })
     if (!changed) return null
-    persist(all)
     return { blocks, count: new Set(all.map((r) => r.placeholder)).size }
   }
 
   // 工具结果:写日志前替换。
   ctx.on('tools/post-execute', (async (exec: ToolExecutionLike, result: ToolResultLike, next: () => Promise<unknown>) => {
-    const redacted = redactBlocks(result.content)
+    const redacted = redactBlocks(result.content, exec.agent?.id)
     if (redacted === null) return next()
     const content = config.inlineNotice
       ? [...redacted.blocks, { type: 'text', text: INLINE_NOTICE(redacted.count) }]
@@ -123,21 +127,24 @@ export function apply(ctx: CordisContext, rawConfig?: PluginConfig): void {
   }) as never)
 
   // run_code 子调用的日志副本。
-  ctx.on('tools/code-dispatch-log', (async (_dispatch: unknown, next: () => Promise<TextLikeBlock[]>) => {
+  ctx.on('tools/code-dispatch-log', (async (
+    dispatch: { agent?: AgentLike; exec?: ToolExecutionLike },
+    next: () => Promise<TextLikeBlock[]>,
+  ) => {
     const content = await next()
-    const redacted = redactBlocks(content)
+    const redacted = redactBlocks(content, dispatch.agent?.id ?? dispatch.exec?.agent?.id)
     return redacted === null ? content : redacted.blocks
   }) as never)
 
   // 用户消息:进入 step 前替换。
   ctx.on('agent/pre-step', (async (
-    payload: { messages: MessageLike[] },
+    payload: { agent?: AgentLike; messages: MessageLike[] },
     next: () => Promise<unknown>,
   ) => {
     if (!config.redactUserMessages) return next()
     let changed = false
     const messages = payload.messages.map((message) => {
-      const redacted = redactBlocks(message.content)
+      const redacted = redactBlocks(message.content, payload.agent?.id)
       if (redacted === null) return message
       changed = true
       return { ...message, content: redacted.blocks }
@@ -163,18 +170,18 @@ export function apply(ctx: CordisContext, rawConfig?: PluginConfig): void {
     return next()
   }) as never)
 
-  // broker 工具:解析占位符执行命令。
+  // broker 工具:按会话解析占位符执行命令。
   if (config.secretExec.enabled) {
     ctx.inject(['tools'], (injected) => {
       const tools = injected.tools as { register(def: Record<string, unknown>): () => void } | undefined
       if (tools === undefined) return
-      const tool = createSecretExecTool({ engine, config: config.secretExec, persist })
+      const tool = createSecretExecTool({ engine, config: config.secretExec })
       if (typeof injected.effect === 'function') injected.effect(() => tools.register(tool))
       else tools.register(tool)
     })
   }
 
-  // 遥测出站兜底:深度遍历 JSON,字符串值过引擎。
+  // 遥测出站兜底:深度遍历 JSON,字符串值过引擎。拿不到会话身份,进匿名桶。
   ctx.on('session-telemetry/record', ((record: Record<string, unknown>, next: () => Record<string, unknown>) => {
     const current = next()
     let changed = false
@@ -183,7 +190,6 @@ export function apply(ctx: CordisContext, rawConfig?: PluginConfig): void {
         const result = engine.redact(value)
         if (result.redactions.length === 0) return value
         changed = true
-        persist(result.redactions)
         return result.text
       }
       if (Array.isArray(value)) return value.map(walk)

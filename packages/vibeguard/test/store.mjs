@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { appendMappings, defaultStorePaths, loadMappings, loadOrCreateKey } from '../dist/core.js'
+import { defaultStorePaths, loadOrCreateKey } from '../dist/core.js'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vibeguard-test-'))
 const paths = defaultStorePaths(tmp)
@@ -13,7 +13,7 @@ assert.equal(key1.length, 32)
 assert.equal(fs.statSync(paths.dir).mode & 0o777, 0o700)
 assert.equal(fs.statSync(paths.keyFile).mode & 0o777, 0o600)
 
-// 2. key 复用:第二次加载得到同一密钥。
+// 2. key 复用:第二次加载得到同一密钥(占位符稳定性全靠它)。
 const key2 = loadOrCreateKey(paths)
 assert.deepEqual([...key2], [...key1])
 
@@ -22,29 +22,12 @@ fs.chmodSync(paths.keyFile, 0o644)
 loadOrCreateKey(paths)
 assert.equal(fs.statSync(paths.keyFile).mode & 0o777, 0o600)
 
-// 4. map.jsonl:append + 加载 roundtrip。
-appendMappings(paths, [
-  { placeholder: '__REDACTED_API_KEY_aaaaaaaaaaaa__', value: 'sk-one', name: 'API_KEY' },
-  { placeholder: '__REDACTED_PASSWORD_bbbbbbbbbbbb__', value: 'p@ss', name: 'PASSWORD' },
-])
-appendMappings(paths, [{ placeholder: '__REDACTED_JWT_cccccccccccc__', value: 'jwt', name: 'JWT' }])
-assert.equal(fs.statSync(paths.mapFile).mode & 0o777, 0o600)
-const loaded = loadMappings(paths)
-assert.equal(loaded.length, 3)
-assert.equal(loaded[0].placeholder, '__REDACTED_API_KEY_aaaaaaaaaaaa__')
-assert.equal(loaded[2].name, 'JWT')
+// 4. key 太短(损坏/手改)直接报错,fail-fast。
+fs.writeFileSync(paths.keyFile, Buffer.from([1, 2, 3]), { mode: 0o600 })
+assert.throws(() => loadOrCreateKey(paths), /key file too short/)
 
-// 5. 坏行容忍:手删残的文件不弄死加载。
-fs.appendFileSync(paths.mapFile, '{corrupt json\n\n')
-const loaded2 = loadMappings(paths)
-assert.equal(loaded2.length, 3)
-
-// 6. 空 append 是 no-op,不创建文件。
-const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-vibeguard-test2-'))
-const paths2 = defaultStorePaths(tmp2)
-appendMappings(paths2, [])
-assert.equal(fs.existsSync(paths2.mapFile), false)
+// 5. 持久面只有 key:store 不再创建任何映射文件(map.jsonl 已随会话内存表设计移除)。
+assert.deepEqual(fs.readdirSync(paths.dir), ['key'])
 
 fs.rmSync(tmp, { recursive: true, force: true })
-fs.rmSync(tmp2, { recursive: true, force: true })
 console.log('store.mjs: all assertions passed')

@@ -143,4 +143,38 @@ function fresh() {
   const phone = on.redact('phone: 13812345678')
   assert.equal(phone.redactions[0].name, 'PII_CN_PHONE')
 }
+// 13. 会话作用域:同会话可解析,其他会话不可;跨会话同秘密同占位符。
+{
+  const e = fresh()
+  const value = 'sk-session-scope-test-0123456789abcdef'
+  const r = e.redact(`key=${value}`, 'session-a')
+  const ph = r.redactions[0].placeholder
+  assert.equal(e.resolve(ph, 'session-a'), value)
+  assert.equal(e.resolve(ph, 'session-b'), undefined, '别的会话不可解析')
+  const r2 = e.redact(`key=${value}`, 'session-b')
+  assert.equal(r2.redactions[0].placeholder, ph, '跨会话占位符稳定(同一 HMAC key)')
+  assert.equal(e.resolve(ph, 'session-b'), value, '值流过 session-b 后该会话才可解析')
+}
+
+// 14. 匿名桶(遥测兜底路径):脱敏生效,永不解析。
+{
+  const e = fresh()
+  const value = 'sk-anonymous-bucket-0123456789abcdef'
+  const r = e.redact(`key=${value}`)
+  const ph = r.redactions[0].placeholder
+  assert.ok(!r.text.includes(value), '匿名桶照常脱敏')
+  assert.equal(e.resolve(ph, 'session-a'), undefined, '匿名桶对任何会话不可解析')
+}
+
+// 15. 重启即蒸发:新引擎实例(同一 key)对旧占位符一无所知。
+{
+  const e1 = fresh()
+  const value = 'sk-restart-eviction-0123456789abcdef'
+  const ph = e1.redact(`key=${value}`, 'session-a').redactions[0].placeholder
+  const e2 = fresh()
+  assert.equal(e2.resolve(ph, 'session-a'), undefined, '重启后占位符不可兑现')
+  const ph2 = e2.redact(`key=${value}`, 'session-a').redactions[0].placeholder
+  assert.equal(ph2, ph, '但占位符身份不变(日志里的旧占位符仍指向同一秘密)')
+}
+
 console.log('engine.mjs: all assertions passed')

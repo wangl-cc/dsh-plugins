@@ -7,8 +7,11 @@
  * 日志如实记录带占位符的命令,替换只发生在本子进程的内存里。
  *
  * 安全性质:
- *  - 真值从 map 映射(engine.resolve)查出后只存在于子进程内存,不进
- *    上下文、不进日志;日志/审批界面看到的是带占位符的命令;
+ *  - 解析只查**本会话**的内存桶(engine.resolve(ph, session)):占位符
+ *    可兑现 ⟺ 真值在本会话、本进程里真实流经过;从旧日志/别的会话抄来
+ *    的占位符一律 fail-closed;拿不到会话身份的调用直接拒绝;
+ *  - 真值查出后只存在于子进程内存,不进上下文、不进日志;日志/审批
+ *    界面看到的是带占位符的命令;
  *  - 子进程环境做与 dsh-subprocess 同款的凭据 scrub(剥掉
  *    KEY|PASSWORD|SECRET|TOKEN 形状与 DSH_ 前缀),防 `env` 侧漏;
  *  - 输出双重脱敏:先把本次用到的真值**直接**换回占位符(不依赖规则
@@ -40,13 +43,12 @@ export interface SecretExecConfig {
 export interface BrokerDeps {
   engine: Engine
   config: SecretExecConfig
-  /** engine.redact 产生的新映射需要落盘;由 index.ts 注入。 */
-  persist: (redactions: { placeholder: string; value: string; name: string; isNew: boolean }[]) => void
 }
 
-/** 本地最小 exec 视图(只需要取消信号)。 */
+/** 本地最小 exec 视图(取消信号 + 会话身份)。 */
 interface ExecLike {
   signal?: AbortSignal
+  agent?: { readonly id: string }
 }
 
 interface SecretExecArgs {
@@ -172,19 +174,24 @@ export function createSecretExecTool(deps: BrokerDeps): Record<string, unknown> 
       if (typeof args.command !== 'string' || args.command.length === 0) {
         throw new Error('secret_exec: command must be a non-empty string')
       }
+      // 拿不到会话身份 = 无法确定该查哪个会话的桶,fail-closed。
+      const session = exec.agent?.id
+      if (session === undefined) {
+        throw new Error('secret_exec: no agent session identity on this call — resolution is fail-closed')
+      }
 
-      // 解析占位符;任何一个未知都整体拒绝。
+      // 只解析本会话桶里的占位符;任何一个未知都整体拒绝。
       const found = [...new Set(args.command.match(PLACEHOLDER_PATTERN) ?? [])]
       const pairs: Array<[string, string]> = []
       const unknown: string[] = []
       for (const ph of found) {
-        const value = deps.engine.resolve(ph)
+        const value = deps.engine.resolve(ph, session)
         if (value === undefined) unknown.push(ph)
         else pairs.push([ph, value])
       }
       if (unknown.length > 0) {
         throw new Error(
-          `secret_exec: unknown placeholder(s): ${unknown.join(', ')} — they do not exist in the redaction map; ask the user for the real value or re-check the placeholder`,
+          `secret_exec: unresolvable placeholder(s): ${unknown.join(', ')} — their real values never flowed through this session (or the process restarted since); ask the user to paste the value again`,
         )
       }
 
@@ -193,13 +200,11 @@ export function createSecretExecTool(deps: BrokerDeps): Record<string, unknown> 
 
       const result = await runCommand(command, args, deps, exec.signal)
 
-      // 输出双脱敏:先换回本次用到的真值,再过引擎。
+      // 输出双脱敏:先换回本次用到的真值,再过引擎(记入本会话桶)。
       const re = (text: string): string => {
         let out = text
         for (const [ph, value] of pairs) out = replaceAllLiteral(out, value, ph)
-        const r = deps.engine.redact(out)
-        if (r.redactions.length > 0) deps.persist(r.redactions)
-        return r.text
+        return deps.engine.redact(out, session).text
       }
 
       return { ...result, stdout: re(result.stdout), stderr: re(result.stderr), resolved: found }

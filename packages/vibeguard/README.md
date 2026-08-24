@@ -10,8 +10,8 @@ sk-kimi-WFek…  →  __REDACTED_GENERIC_API_KEY_3f9a1c2b4d5e__
 
 - **占位符是内容的纯函数**:`__REDACTED_<NAME>_<hmac12>__`,hmac12 = HMAC-SHA256(本机密钥, 原文) 前 12 位 hex。同一秘密在任何会话、重启前后都是同一占位符;不依赖会话/环境/计数器上下文。
 - **拦截点**:`tools/post-execute`(工具结果)、`agent/pre-step`(用户消息)、`tools/code-dispatch-log`(run_code 子调用日志)、`session-telemetry/record`(遥测兜底);外加 `tools/pre-execute` 对敏感路径(`~/.dsh/.credentials.yaml`、`~/.dsh/redaction/`、`~/.ssh/id_*` 等)直接 deny——匹配是字段感知的,只检查工具的目标参数(`command`/`file_path`/`path`/`workdir` 等),文档内容提到路径字样不误伤。
-- **告知模型**:注册一段常驻系统提示词,说明占位符语义(禁止猜测原值、同占位符恒同值、需真值请用户提供或用 broker 工具)。
-- **不还原**:占位符在任何自动链路里都不会变回真值;真值查询 = `grep <占位符> ~/.dsh/redaction/map.jsonl`(仅用户;该目录对模型侧工具是 deny 的)。模型需要**用**真值执行命令时走 `secret_exec`(见下)。
+- **告知模型**:注册一段常驻系统提示词,说明占位符语义(禁止猜测原值、同占位符恒同值、只在真值流经过的活会话里可兑现)。
+- **会话作用域还原**:映射只在内存里按会话分桶,进程死即蒸发;占位符可兑现 ⟺ 真值在本会话、本进程里真实流经过。模型需要**用**真值执行命令时走 `secret_exec`(见下)。
 
 ## secret_exec(broker 工具)
 
@@ -21,9 +21,9 @@ DSH 不允许改写已落账的工具参数("arguments are already logged and pr
 { "command": "curl -H 'Authorization: Bearer __REDACTED_GENERIC_API_KEY_…__' https://api.example.com" }
 ```
 
-占位符在**子进程内存里**换成真值执行;日志和审批界面看到的仍是占位符;输出先把用过的真值换回占位符、再过引擎兜其他秘密;未知占位符直接报错(提示向用户要值)。子进程环境做与 dsh-subprocess 同款的凭据 scrub(`KEY|PASSWORD|SECRET|TOKEN` 形状与 `DSH_` 前缀不下发),防 `env` 侧漏。
+占位符在**子进程内存里**换成真值执行;日志和审批界面看到的仍是占位符;输出先把用过的真值换回占位符、再过引擎兜其他秘密。解析只查**本会话**的内存桶:从旧日志或别的会话抄来的占位符、重启后的占位符一律 fail-closed(提示请用户重贴);拿不到会话身份的调用直接拒绝。子进程环境做与 dsh-subprocess 同款的凭据 scrub(`KEY|PASSWORD|SECRET|TOKEN` 形状与 `DSH_` 前缀不下发),防 `env` 侧漏。
 
-默认每次执行走 ask 审批(`secretExec.requireApproval`);approval 策略为 never 时即默认拒绝。审计链:日志里的占位符命令 + map.jsonl(仅用户可读)= 完整可重建。
+默认每次执行走 ask 审批(`secretExec.requireApproval`);approval 策略为 never 时即默认拒绝。审计:日志里留着带占位符的命令,可兑现性本身即"该秘密在本会话出现过"的证明。
 
 设计决策与架构约束的完整论证见 [DESIGN.md](DESIGN.md)。
 
@@ -66,12 +66,13 @@ rules:
 ## 存储
 
 ```
-~/.dsh/redaction/    0700
-├── key              0600,32 字节随机,首次运行生成
-└── map.jsonl        0600,append-only,{"ph","value","name","ts"}
+~/.dsh/redaction/
+└── key              0600,32 字节随机,首次运行生成(0700 目录)
 ```
 
-威胁模型:本机可信、出境不可信。映射不加密,靠文件权限;不淘汰,清理 = 手动删行。
+持久化的只有 HMAC key——它让占位符跨会话/重启稳定(纯函数,无需持久映射表)。**映射本身不落盘**:按会话分桶存在引擎内存里,进程死即蒸发(曾是 map.jsonl;broker 使占位符成为可兑现凭证后,持久明文映射表就是纯攻击面,已移除)。
+
+威胁模型:本机可信、出境不可信。key 泄露 + 提供商侧日志 = 低熵秘密可被字典验证,所以 `~/.dsh/redaction/` 整个目录对模型侧工具是 deny 的。
 
 ## 开发
 
