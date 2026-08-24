@@ -22,12 +22,12 @@
  */
 import os from 'node:os'
 import path from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { ConfigSchema, type PluginConfig } from './config'
 import { createSecretExecTool } from './broker'
 import { findDeniedPath } from './guard'
 import { compileRules, createEngine, type AppliedRedaction, type Engine, type RedactResult } from './engine'
 import { BUILTIN_RULES, OPTIONAL_RULES } from './patterns'
-import { defaultStorePaths, loadOrCreateKey, type StorePaths } from './store'
 
 export const name = 'vibeguard'
 /** 本地最小 Cordis 类型(与 monorepo 各包同风格,不依赖类型包)。 */
@@ -94,8 +94,10 @@ export function apply(ctx: CordisContext, rawConfig?: PluginConfig): void {
     ...BUILTIN_RULES.filter((rule) => !disabled.has(rule.name)),
   ])
 
-  const paths: StorePaths = defaultStorePaths()
-  const engine: Engine = createEngine(rules, loadOrCreateKey(paths))
+  // 零磁盘状态:HMAC key 与映射一样只活在内存,进程启动时随机生成。
+  // 重启 = 全部历史占位符永久失联(不可兑现、不可关联),这是知情接受的
+  // 代价;收益是没有任何可偷的持久秘密材料。
+  const engine: Engine = createEngine(rules, randomBytes(32))
 
   /** 脱敏一组 content 块;未命中返回 null(调用侧走 next() 保持原样)。 */
   const redactBlocks = (
@@ -154,10 +156,8 @@ export function apply(ctx: CordisContext, rawConfig?: PluginConfig): void {
   }) as never)
 
   // 敏感路径访问控制(字段感知,见 guard.ts)+ secret_exec 审批门槛。
-  // ~/.dsh/redaction/ 是硬编码的自我保护不变量(HMAC key 是纯随机字节,
-  // 不匹配任何脱敏规则,读进来会原样出境;key 泄露 + 提供商日志 =
-  // 低熵秘密可被离线字典验证),config 删不掉它。
-  const denyList = [...expandDenyPaths(['~/.dsh/redaction/']), ...expandDenyPaths(config.denyPaths)]
+  // 插件零磁盘状态后没有需要自保护的文件,deny 完全是用户策略入口。
+  const denyList = expandDenyPaths(config.denyPaths)
   ctx.on('tools/pre-execute', (async (exec: ToolExecutionLike, next: () => Promise<unknown>) => {
     const denied = findDeniedPath(exec.arguments, denyList)
     if (denied !== undefined) {
