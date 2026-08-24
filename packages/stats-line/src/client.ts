@@ -26,6 +26,8 @@ import {
   billedInputTokens,
   cacheHitPercent,
   deriveStats,
+  lastStepReading,
+  type LastStepReading,
   formatDuration,
   formatMoney,
   formatTokens,
@@ -125,13 +127,15 @@ const zh = {
   cacheSuffix: '({p}%)',
   estimated: '≈',
   cardItems: '组件序列',
-  cardItemsHint: '按住 ⠿ 拖拽排序;点 ·/| 切换分隔符大小;费用组件的币种设置在 session-cost 卡片里。自定义组件用 {placeholder} 插值:{turns} {steps} {llm} {tools} {ttft} {tps} {input} {output} {cache} {cost};引用缺失数据的组件不渲染;清空恢复默认。',
+  cardItemsHint: '按住 ⠿ 拖拽排序;点 ·/| 切换分隔符大小;费用组件的币种设置在 session-cost 卡片里。自定义组件用 {placeholder} 插值:{turns} {steps} {llm} {tools} {ttft} {tps} {input} {output} {cache} {cost} {ttftLast} {tpsLast};引用缺失数据的组件不渲染;清空恢复默认。',
   cardAdd: '添加:',
   compCounts: '计数',
   compLlm: 'LLM 时长',
   compTools: '工具时长',
-  compTtft: 'TTFT',
-  compTps: '吐字速度',
+  compTtft: 'TTFT(平均)',
+  compTps: '吐字速度(平均)',
+  compTtftLast: 'TTFT(最近一轮)',
+  compTpsLast: '吐字速度(最近一轮)',
   compTokens: 'Token 用量',
   compCost: '费用',
   compSepSmall: '小分隔符',
@@ -161,13 +165,15 @@ const en = {
   cacheSuffix: '({p}%)',
   estimated: '≈',
   cardItems: 'Components',
-  cardItemsHint: 'Hold ⠿ to drag and reorder; click ·/| to toggle separator size; currency settings for the cost component live in the session-cost card. Custom components interpolate {placeholders}: {turns} {steps} {llm} {tools} {ttft} {tps} {input} {output} {cache} {cost}; components referencing unavailable data are not rendered; clear all to restore defaults.',
+  cardItemsHint: 'Hold ⠿ to drag and reorder; click ·/| to toggle separator size; currency settings for the cost component live in the session-cost card. Custom components interpolate {placeholders}: {turns} {steps} {llm} {tools} {ttft} {tps} {input} {output} {cache} {cost} {ttftLast} {tpsLast}; components referencing unavailable data are not rendered; clear all to restore defaults.',
   cardAdd: 'Add:',
   compCounts: 'Counts',
   compLlm: 'LLM time',
   compTools: 'Tool time',
-  compTtft: 'TTFT',
-  compTps: 'Speed',
+  compTtft: 'TTFT (avg)',
+  compTps: 'Speed (avg)',
+  compTtftLast: 'TTFT (last)',
+  compTpsLast: 'Speed (last)',
   compTokens: 'Tokens',
   compCost: 'Cost',
   compSepSmall: 'Small sep',
@@ -292,6 +298,7 @@ function buildValues(
   costUsage: { cost?: number } | undefined,
   currency: Currency,
   t: CellProps['t'],
+  last: LastStepReading | undefined,
 ): { parts: Record<string, string | undefined>; values: Record<string, string | undefined> } {
   // 数据不可得时该组件键不存在(渲染时整项丢弃);仅 {cache} 在 tokens 可得
   // 但无缓存数据时为空串(括号烘在值里)。
@@ -316,6 +323,17 @@ function buildValues(
     if (stats.decodeMs > 0) {
       parts.tps = t('tps', { tps: formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3)) })
       values.tps = formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3))
+    }
+  }
+  // 最近一轮(瞬时):始终从窗口节点读取——sessionStats 投影不含逐步数据。
+  if (last !== undefined) {
+    if (last.ttftMs !== null) {
+      parts.ttftLast = t('ttft', { d: formatDuration(last.ttftMs) })
+      values.ttftLast = formatDuration(last.ttftMs)
+    }
+    if (last.decodeMs !== null && last.decodeMs > 0 && last.outputTokens !== null) {
+      parts.tpsLast = t('tps', { tps: formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3)) })
+      values.tpsLast = formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3))
     }
   }
   if (usage !== undefined && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {
@@ -362,7 +380,8 @@ function CompactStatsLine(props: CellProps): React.ReactElement | null {
   const stats: DerivedStats | undefined = projected ?? (settledNodes !== undefined ? deriveStats(settledNodes) : undefined)
   // 币种跟随投影 view(宿主端 settings 解析 + 在线汇率),本地缺省兜底。
   const currency = validCurrency(sessionCost?.currency) ?? CURRENCY
-  const { parts, values } = buildValues(stats, usage, sessionCost, costUsage, currency, t)
+  const last = settledNodes !== undefined ? lastStepReading(settledNodes) : undefined
+  const { parts, values } = buildValues(stats, usage, sessionCost, costUsage, currency, t, last)
   const pieces = renderStatsLineItems(ui.items ?? DEFAULT_STATS_LINE_ITEMS, parts, values)
   const css = ui.css ?? null
   if (pieces.length === 0 && css === null) return null
@@ -391,6 +410,7 @@ function docField<T>(doc: unknown, key: string, fallback: T): T {
 const SAMPLE_STATS: DerivedStats = { turns: 5, steps: 23, llmMs: 162_000, toolMs: 45_000, ttftMs: 1_200, ttftSteps: 1, decodeTokens: 2_025, decodeMs: 45_000 }
 const SAMPLE_USAGE: TokenUsage = { uncachedInputTokens: 252_000, cacheReadTokens: 8_148_000, cacheWriteTokens: 0, outputTokens: 68_800 }
 const SAMPLE_COST: SessionCostView = { cost: 0.0082 / 7.2, pricing: 'subscription' }
+const SAMPLE_LAST: LastStepReading = { ttftMs: 980, decodeMs: 38_000, outputTokens: 1_862 }
 
 /** 草稿里的组件项与文档同形(组件已无带校验的数值属性)。 */
 type DraftItem = StatsLineItem
@@ -430,6 +450,10 @@ function itemLabelKey(item: { kind: StatsLineItem['kind']; size: StatsLineItem['
       return 'compTtft'
     case 'tps':
       return 'compTps'
+    case 'ttftLast':
+      return 'compTtftLast'
+    case 'tpsLast':
+      return 'compTpsLast'
     case 'tokens':
       return 'compTokens'
     case 'cost':
@@ -442,7 +466,7 @@ function itemLabelKey(item: { kind: StatsLineItem['kind']; size: StatsLineItem['
 }
 
 /** 调色板:可添加的内置组件;分隔符与自定义单独给。 */
-const PALETTE_KINDS = ['counts', 'llm', 'tools', 'ttft', 'tps', 'tokens', 'cost'] as const
+const PALETTE_KINDS = ['counts', 'llm', 'tools', 'ttft', 'tps', 'ttftLast', 'tpsLast', 'tokens', 'cost'] as const
 
 /**
  * 设置 GUI 卡片:可拖拽的组件编排器。组件序列 = 内置数据组件 + 大小分隔符
@@ -485,7 +509,7 @@ function StatsLineCard(props: CellProps): React.ReactElement | null {
     setDraft(null)
   }
   // 预览:示例数据走与 cell 完全相同的渲染路径(组件可得性/分隔符收敛都真实)。
-  const sample = buildValues(SAMPLE_STATS, SAMPLE_USAGE, SAMPLE_COST, undefined, CURRENCY, t)
+  const sample = buildValues(SAMPLE_STATS, SAMPLE_USAGE, SAMPLE_COST, undefined, CURRENCY, t, SAMPLE_LAST)
   const previewItems: StatsLineItem[] = (value.items.length > 0 ? value.items : DEFAULT_STATS_LINE_ITEMS.map(toDraftItem)).map(fromDraftItem)
   const previewText = renderStatsLineItems(previewItems, sample.parts, sample.values)
     .map((piece) => (piece.type === 'sep' ? (piece.size === 'big' ? '|' : '·') : piece.text))

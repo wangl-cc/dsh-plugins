@@ -8,6 +8,8 @@ const ITEM_KINDS = [
 	"tools",
 	"ttft",
 	"tps",
+	"ttftLast",
+	"tpsLast",
 	"tokens",
 	"cost",
 	"sep",

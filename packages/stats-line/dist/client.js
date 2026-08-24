@@ -82,6 +82,14 @@ window.__ModuleLoader__.load({
 				decodeTokens
 			};
 		}
+		function lastStepReading(nodes) {
+			for (let i = nodes.length - 1; i >= 0; i--) {
+				const node = nodes[i];
+				if (node === void 0 || node.kind !== "assistant") continue;
+				const reading = assistantStepReading(node);
+				if (reading.ttftMs !== null || reading.decodeMs !== null && reading.outputTokens !== null) return reading;
+			}
+		}
 		/** 紧凑 token 计数:517 / 12.2K / 517K / 1.2M。 */
 		function formatTokens(n) {
 			const scaled = (v) => v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10);
@@ -177,6 +185,8 @@ window.__ModuleLoader__.load({
 			"tools",
 			"ttft",
 			"tps",
+			"ttftLast",
+			"tpsLast",
 			"tokens",
 			"cost",
 			"sep",
@@ -347,13 +357,15 @@ window.__ModuleLoader__.load({
 			cacheSuffix: "({p}%)",
 			estimated: "≈",
 			cardItems: "组件序列",
-			cardItemsHint: "按住 ⠿ 拖拽排序;点 ·/| 切换分隔符大小;费用组件的币种设置在 session-cost 卡片里。自定义组件用 {placeholder} 插值:{turns} {steps} {llm} {tools} {ttft} {tps} {input} {output} {cache} {cost};引用缺失数据的组件不渲染;清空恢复默认。",
+			cardItemsHint: "按住 ⠿ 拖拽排序;点 ·/| 切换分隔符大小;费用组件的币种设置在 session-cost 卡片里。自定义组件用 {placeholder} 插值:{turns} {steps} {llm} {tools} {ttft} {tps} {input} {output} {cache} {cost} {ttftLast} {tpsLast};引用缺失数据的组件不渲染;清空恢复默认。",
 			cardAdd: "添加:",
 			compCounts: "计数",
 			compLlm: "LLM 时长",
 			compTools: "工具时长",
-			compTtft: "TTFT",
-			compTps: "吐字速度",
+			compTtft: "TTFT(平均)",
+			compTps: "吐字速度(平均)",
+			compTtftLast: "TTFT(最近一轮)",
+			compTpsLast: "吐字速度(最近一轮)",
 			compTokens: "Token 用量",
 			compCost: "费用",
 			compSepSmall: "小分隔符",
@@ -383,13 +395,15 @@ window.__ModuleLoader__.load({
 			cacheSuffix: "({p}%)",
 			estimated: "≈",
 			cardItems: "Components",
-			cardItemsHint: "Hold ⠿ to drag and reorder; click ·/| to toggle separator size; currency settings for the cost component live in the session-cost card. Custom components interpolate {placeholders}: {turns} {steps} {llm} {tools} {ttft} {tps} {input} {output} {cache} {cost}; components referencing unavailable data are not rendered; clear all to restore defaults.",
+			cardItemsHint: "Hold ⠿ to drag and reorder; click ·/| to toggle separator size; currency settings for the cost component live in the session-cost card. Custom components interpolate {placeholders}: {turns} {steps} {llm} {tools} {ttft} {tps} {input} {output} {cache} {cost} {ttftLast} {tpsLast}; components referencing unavailable data are not rendered; clear all to restore defaults.",
 			cardAdd: "Add:",
 			compCounts: "Counts",
 			compLlm: "LLM time",
 			compTools: "Tool time",
-			compTtft: "TTFT",
-			compTps: "Speed",
+			compTtft: "TTFT (avg)",
+			compTps: "Speed (avg)",
+			compTtftLast: "TTFT (last)",
+			compTpsLast: "Speed (last)",
 			compTokens: "Tokens",
 			compCost: "Cost",
 			compSepSmall: "Small sep",
@@ -437,7 +451,7 @@ window.__ModuleLoader__.load({
 			return value;
 		}
 		/** 组件文本(parts)+ 自定义模板占位符词表(values);cell 渲染与设置卡片预览共用同一份逻辑。 */
-		function buildValues(stats, usage, sessionCost, costUsage, currency, t) {
+		function buildValues(stats, usage, sessionCost, costUsage, currency, t, last) {
 			const parts = {};
 			const values = {};
 			if (stats !== void 0 && stats.steps > 0) {
@@ -462,6 +476,16 @@ window.__ModuleLoader__.load({
 				if (stats.decodeMs > 0) {
 					parts.tps = t("tps", { tps: formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3)) });
 					values.tps = formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3));
+				}
+			}
+			if (last !== void 0) {
+				if (last.ttftMs !== null) {
+					parts.ttftLast = t("ttft", { d: formatDuration(last.ttftMs) });
+					values.ttftLast = formatDuration(last.ttftMs);
+				}
+				if (last.decodeMs !== null && last.decodeMs > 0 && last.outputTokens !== null) {
+					parts.tpsLast = t("tps", { tps: formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3)) });
+					values.tpsLast = formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3));
 				}
 			}
 			if (usage !== void 0 && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {
@@ -500,7 +524,7 @@ window.__ModuleLoader__.load({
 			const costUsage = useProjection !== void 0 ? useProjection("costUsage") : void 0;
 			const sessionCost = useProjection !== void 0 ? useProjection("sessionCost") : void 0;
 			const ui = uiFromDoc(react.useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot)?.value);
-			const { parts, values } = buildValues(projected ?? (settledNodes !== void 0 ? deriveStats(settledNodes) : void 0), usage, sessionCost, costUsage, validCurrency(sessionCost?.currency) ?? CURRENCY, t);
+			const { parts, values } = buildValues(projected ?? (settledNodes !== void 0 ? deriveStats(settledNodes) : void 0), usage, sessionCost, costUsage, validCurrency(sessionCost?.currency) ?? CURRENCY, t, settledNodes !== void 0 ? lastStepReading(settledNodes) : void 0);
 			const pieces = renderStatsLineItems(ui.items ?? DEFAULT_STATS_LINE_ITEMS, parts, values);
 			const css = ui.css ?? null;
 			if (pieces.length === 0 && css === null) return null;
@@ -542,6 +566,11 @@ window.__ModuleLoader__.load({
 			cost: .0082 / 7.2,
 			pricing: "subscription"
 		};
+		const SAMPLE_LAST = {
+			ttftMs: 980,
+			decodeMs: 38e3,
+			outputTokens: 1862
+		};
 		const toDraftItem = (item) => item;
 		/** 草稿项 → 文档项(空模板自定义组件丢弃)。 */
 		function fromDraftItem(item) {
@@ -566,6 +595,8 @@ window.__ModuleLoader__.load({
 				case "tools": return "compTools";
 				case "ttft": return "compTtft";
 				case "tps": return "compTps";
+				case "ttftLast": return "compTtftLast";
+				case "tpsLast": return "compTpsLast";
 				case "tokens": return "compTokens";
 				case "cost": return "compCost";
 				case "sep": return item.size === "big" ? "compSepBig" : "compSepSmall";
@@ -579,6 +610,8 @@ window.__ModuleLoader__.load({
 			"tools",
 			"ttft",
 			"tps",
+			"ttftLast",
+			"tpsLast",
 			"tokens",
 			"cost"
 		];
@@ -628,7 +661,7 @@ window.__ModuleLoader__.load({
 				}
 				setDraft(null);
 			};
-			const sample = buildValues(SAMPLE_STATS, SAMPLE_USAGE, SAMPLE_COST, void 0, CURRENCY, t);
+			const sample = buildValues(SAMPLE_STATS, SAMPLE_USAGE, SAMPLE_COST, void 0, CURRENCY, t, SAMPLE_LAST);
 			const previewText = renderStatsLineItems((value.items.length > 0 ? value.items : DEFAULT_STATS_LINE_ITEMS.map(toDraftItem)).map(fromDraftItem), sample.parts, sample.values).map((piece) => piece.type === "sep" ? piece.size === "big" ? "|" : "·" : piece.text).join(" ");
 			const body = open ? h("div", {
 				className: "slc-body",

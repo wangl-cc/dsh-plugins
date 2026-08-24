@@ -1,6 +1,7 @@
 // 共享纯函数(format.ts → dist/format.js)的测试:格式化、币种解析、节点折叠。
 // 这些函数被 client bundle 内联使用——这里测的就是线上跑的那份逻辑。
 import {
+  lastStepReading,
   billedInputTokens,
   cacheHitPercent,
   deriveStats,
@@ -95,6 +96,21 @@ check('deriveStats 工具耗时', stats.toolMs === 500)
 check('deriveStats TTFT 均值分子', stats.ttftMs === 500 && stats.ttftSteps === 2)
 check('deriveStats decode', stats.decodeMs === 1500 && stats.decodeTokens === 500)
 check('deriveStats 空窗口', deriveStats([]).steps === 0)
+
+// lastStepReading:取末尾第一个有可用读数的 assistant step;流式中的 step
+// TTFT 已定即贡献 ttftLast,但 decode 未完成/无 usage 时 tpsLast 不渲染
+// (调用方按字段各自判空);ttft 与 tps 所需字段各自可空
+const asst = (timing, outputTokens) => ({ kind: 'assistant', turn: 1, time: 0, timing, usage: outputTokens === null ? null : { outputTokens } })
+const done = (ttft, decode, out) => asst({ stepStartTime: 0, firstTokenTime: ttft, completedTime: ttft + decode }, out)
+const streaming = asst({ stepStartTime: 0, firstTokenTime: 500, completedTime: NaN }, null)
+const last = lastStepReading([done(1_000, 40_000, 2_000), streaming])
+check('lastStepReading 流式 step 贡献 TTFT', last !== undefined && last.ttftMs === 500)
+check('lastStepReading 流式 step 无 tps 读数', last !== undefined && last.outputTokens === null)
+check('lastStepReading 取末尾完成 step', (() => { const l = lastStepReading([done(800, 10_000, 300), done(1_000, 40_000, 2_000)]); return l !== undefined && l.ttftMs === 1_000 && l.decodeMs === 40_000 && l.outputTokens === 2_000 })())
+const noTtft = lastStepReading([asst({ stepStartTime: null, firstTokenTime: 100, completedTime: 10_100 }, 500)])
+check('lastStepReading ttft 可空但 tps 可用', noTtft !== undefined && noTtft.ttftMs === null && noTtft.decodeMs === 10_000)
+check('lastStepReading 空窗口', lastStepReading([]) === undefined)
+check('lastStepReading 无 assistant', lastStepReading([{ kind: 'tool-result', time: 0, callTime: null }]) === undefined)
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

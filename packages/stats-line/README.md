@@ -7,7 +7,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web plugin
 ```
 
 - **Compact stats line** — shadows the official `id:stats` cell in `conversation.composer.dock` (priority -1, lowest wins; on crash the official cell takes back over). Same data sources as the official StatsLine, shorter labels, flex-wrap layout instead of single-line truncation.
-- **Composable** — the line is a sequence of components (built-ins `counts` `llm` `tools` `ttft` `tps` `tokens` `cost`, small/big separators, custom template components) you arrange in a drag-and-drop composer in the settings GUI, with live preview.
+- **Composable** — the line is a sequence of components (built-ins `counts` `llm` `tools` `ttft` `tps` `ttftLast` `tpsLast` `tokens` `cost` — the `*Last` pair reads the most recent step, small/big separators, custom template components) you arrange in a drag-and-drop composer in the settings GUI, with live preview.
 - **Cost display** — the `cost` component reads the `sessionCost` projection by key (provided by [dsh-session-cost](../session-cost); not installed → the component simply disappears). Currency, exchange rate, decimals and symbol are configured in the `session-cost` settings card.
 
 ## Install
@@ -25,7 +25,7 @@ Settings live in the `stats-line` namespace — edit them in **Settings → Plug
 ```yaml
 stats-line:
   items:                          # component sequence (order = display order)
-    - { kind: counts }            # built-ins: counts llm tools ttft tps tokens cost
+    - { kind: counts }            # built-ins: counts llm tools ttft tps ttftLast tpsLast tokens cost
     - { kind: sep, size: big }    # separator: small '·' or big '|'
     - { kind: custom, template: '↑{input}{cache} ↓{output}' }
     - { kind: sep, size: big }
@@ -33,7 +33,7 @@ stats-line:
   css: '.csl-root{font-size:11px}'
 ```
 
-A component whose data is unavailable (e.g. `cost` on an unknown provider, or without dsh-session-cost) is not rendered, and separators collapse automatically (edges dropped, adjacent ones keep the bigger). Custom components interpolate pre-formatted placeholders: `{turns}` `{steps}` `{llm}` `{tools}` `{ttft}` `{tps}` `{input}` `{output}` `{cache}` `{cost}`. Empty/absent fields fall back to defaults. Loader-row `config` (e.g. in `cordis.patch.yml`) still works — it becomes the base layer underneath GUI edits.
+A component whose data is unavailable (e.g. `cost` on an unknown provider, or without dsh-session-cost) is not rendered, and separators collapse automatically (edges dropped, adjacent ones keep the bigger). Custom components interpolate pre-formatted placeholders: `{turns}` `{steps}` `{llm}` `{tools}` `{ttft}` `{tps}` `{ttftLast}` `{tpsLast}` `{input}` `{output}` `{cache}` `{cost}`. Empty/absent fields fall back to defaults. Loader-row `config` (e.g. in `cordis.patch.yml`) still works — it becomes the base layer underneath GUI edits.
 
 ## Develop
 

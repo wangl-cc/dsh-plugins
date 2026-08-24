@@ -88,6 +88,29 @@ export function deriveStats(nodes: ChatNode[]): DerivedStats {
   return { turns: turns.size, steps, llmMs, toolMs, ttftMs, ttftSteps, decodeMs, decodeTokens }
 }
 
+/**
+ * 最近一轮读数:从窗口末尾找第一个有完整计时的 assistant step(流式
+ * 进行中的 step completedTime 未定,自然跳过)。sessionStats 投影不提供
+ * 逐步数据,所以"最近一轮"组件始终从窗口节点读取,与走投影的平均值
+ * 互不依赖;字段按指标各自可空(ttft 需要 stepStart+firstToken,tps
+ * 还要 outputTokens)。
+ */
+export interface LastStepReading {
+  ttftMs: number | null
+  decodeMs: number | null
+  outputTokens: number | null
+}
+
+export function lastStepReading(nodes: ChatNode[]): LastStepReading | undefined {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const node = nodes[i]
+    if (node === undefined || node.kind !== 'assistant') continue
+    const reading = assistantStepReading(node)
+    if (reading.ttftMs !== null || (reading.decodeMs !== null && reading.outputTokens !== null)) return reading
+  }
+  return undefined
+}
+
 /** 紧凑 token 计数:517 / 12.2K / 517K / 1.2M。 */
 export function formatTokens(n: number): string {
   const scaled = (v: number) => (v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
@@ -196,7 +219,7 @@ export function renderTemplate(template: string, values: Record<string, string |
 // ── stats line 组件模型(设置 GUI 的可拖拽单元) ─────────────────────────
 
 /** 组件种类:内置数据组件 + 分隔符 + 自定义模板。 */
-export type StatsLineItemKind = 'counts' | 'llm' | 'tools' | 'ttft' | 'tps' | 'tokens' | 'cost' | 'sep' | 'custom'
+export type StatsLineItemKind = 'counts' | 'llm' | 'tools' | 'ttft' | 'tps' | 'ttftLast' | 'tpsLast' | 'tokens' | 'cost' | 'sep' | 'custom'
 export type StatsLineSepSize = 'small' | 'big'
 
 /**
@@ -210,7 +233,7 @@ export interface StatsLineItem {
   template: string
 }
 
-export const ITEM_KINDS: readonly StatsLineItemKind[] = ['counts', 'llm', 'tools', 'ttft', 'tps', 'tokens', 'cost', 'sep', 'custom']
+export const ITEM_KINDS: readonly StatsLineItemKind[] = ['counts', 'llm', 'tools', 'ttft', 'tps', 'ttftLast', 'tpsLast', 'tokens', 'cost', 'sep', 'custom']
 
 export function makeItem(kind: StatsLineItemKind, init?: Partial<StatsLineItem>): StatsLineItem {
   return { kind, size: 'small', template: '', ...init }

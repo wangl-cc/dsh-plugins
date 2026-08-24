@@ -52,6 +52,14 @@ function deriveStats(nodes) {
 		decodeTokens
 	};
 }
+function lastStepReading(nodes) {
+	for (let i = nodes.length - 1; i >= 0; i--) {
+		const node = nodes[i];
+		if (node === void 0 || node.kind !== "assistant") continue;
+		const reading = assistantStepReading(node);
+		if (reading.ttftMs !== null || reading.decodeMs !== null && reading.outputTokens !== null) return reading;
+	}
+}
 /** 紧凑 token 计数:517 / 12.2K / 517K / 1.2M。 */
 function formatTokens(n) {
 	const scaled = (v) => v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10);
@@ -147,6 +155,8 @@ const ITEM_KINDS = [
 	"tools",
 	"ttft",
 	"tps",
+	"ttftLast",
+	"tpsLast",
 	"tokens",
 	"cost",
 	"sep",
@@ -223,4 +233,4 @@ function renderStatsLineItems(items, parts, values) {
 	return out;
 }
 //#endregion
-export { CURRENCY_PRESETS, DEFAULT_STATS_LINE_ITEMS, ITEM_KINDS, assistantStepReading, billedInputTokens, cacheHitPercent, currencyCode, deriveStats, formatDuration, formatMoney, formatTokens, formatTokensPerSecond, interpolate, makeItem, normalizeItem, renderStatsLineItems, renderTemplate, resolveCurrency, usageOutputTokens };
+export { CURRENCY_PRESETS, DEFAULT_STATS_LINE_ITEMS, ITEM_KINDS, assistantStepReading, billedInputTokens, cacheHitPercent, currencyCode, deriveStats, formatDuration, formatMoney, formatTokens, formatTokensPerSecond, interpolate, lastStepReading, makeItem, normalizeItem, renderStatsLineItems, renderTemplate, resolveCurrency, usageOutputTokens };

@@ -7,10 +7,10 @@
 # 覆盖它,实时生效):
 #   ui: 声明式 stats line 定制——组件序列(数组简写)或对象全形
 #     { items, css }。非法配置整体回退默认。
-#     组件:counts / llm / tools / ttft / tps / tokens / cost(内置);
+#     组件:counts / llm / tools / ttft / tps / ttftLast / tpsLast / tokens / cost(内置;
 #     sep(size: small '·' 或 big '|');custom(template 插值,占位符为
 #     预格式化显示值:{turns} {steps} {llm} {tools} {ttft} {tps} {input}
-#     {output} {cache} {cost})。数据不可得的组件不渲染,分隔符自动收敛。
+#     {output} {cache} {cost} {ttftLast} {tpsLast})。数据不可得的组件不渲染,分隔符自动收敛。
 #     cost 组件的数据与币种配置来自 dsh-session-cost 插件(未安装则不渲染)。
 #     例:
 #       ui:
