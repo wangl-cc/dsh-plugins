@@ -132,10 +132,10 @@ const zh = {
   compCounts: '计数',
   compLlm: 'LLM 时长',
   compTools: '工具时长',
-  compTtft: 'TTFT(平均)',
-  compTps: '吐字速度(平均)',
-  compTtftLast: 'TTFT(最近一轮)',
-  compTpsLast: '吐字速度(最近一轮)',
+  compTtft: 'TTFT(最近+平均)',
+  compTps: '吐字速度(最近+平均)',
+  compTtftLast: 'TTFT(仅最近)',
+  compTpsLast: '吐字速度(仅最近)',
   compTokens: 'Token 用量',
   compCost: '费用',
   compSepSmall: '小分隔符',
@@ -170,10 +170,10 @@ const en = {
   compCounts: 'Counts',
   compLlm: 'LLM time',
   compTools: 'Tool time',
-  compTtft: 'TTFT (avg)',
-  compTps: 'Speed (avg)',
-  compTtftLast: 'TTFT (last)',
-  compTpsLast: 'Speed (last)',
+  compTtft: 'TTFT (last+avg)',
+  compTps: 'Speed (last+avg)',
+  compTtftLast: 'TTFT (last only)',
+  compTpsLast: 'Speed (last only)',
   compTokens: 'Tokens',
   compCost: 'Cost',
   compSepSmall: 'Small sep',
@@ -316,24 +316,30 @@ function buildValues(
       parts.tools = t('tools', { d: formatDuration(stats.toolMs) })
       values.tools = formatDuration(stats.toolMs)
     }
-    if (stats.ttftSteps > 0) {
-      parts.ttft = t('ttft', { d: formatDuration(stats.ttftMs / stats.ttftSteps) })
-      values.ttft = formatDuration(stats.ttftMs / stats.ttftSteps)
-    }
-    if (stats.decodeMs > 0) {
-      parts.tps = t('tps', { tps: formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3)) })
-      values.tps = formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3))
+  }
+  // ttft/tps:最近一轮为主(当前服务状况),括号里是窗口平均(基线参照);
+  // 最近读数不可得(投影路径/窗口折叠)时退回纯平均。最近读数始终从窗口
+  // 节点读取——sessionStats 投影不含逐步数据。
+  const avgTtft = stats !== undefined && stats.ttftSteps > 0 ? formatDuration(stats.ttftMs / stats.ttftSteps) : undefined
+  const lastTtft = last !== undefined && last.ttftMs !== null ? formatDuration(last.ttftMs) : undefined
+  if (lastTtft !== undefined || avgTtft !== undefined) {
+    const d = lastTtft !== undefined && avgTtft !== undefined ? `${lastTtft} (${avgTtft})` : (lastTtft ?? avgTtft ?? '')
+    parts.ttft = t('ttft', { d })
+    values.ttft = d
+    if (lastTtft !== undefined) {
+      parts.ttftLast = t('ttft', { d: lastTtft })
+      values.ttftLast = lastTtft
     }
   }
-  // 最近一轮(瞬时):始终从窗口节点读取——sessionStats 投影不含逐步数据。
-  if (last !== undefined) {
-    if (last.ttftMs !== null) {
-      parts.ttftLast = t('ttft', { d: formatDuration(last.ttftMs) })
-      values.ttftLast = formatDuration(last.ttftMs)
-    }
-    if (last.decodeMs !== null && last.decodeMs > 0 && last.outputTokens !== null) {
-      parts.tpsLast = t('tps', { tps: formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3)) })
-      values.tpsLast = formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3))
+  const avgTps = stats !== undefined && stats.decodeMs > 0 ? formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3)) : undefined
+  const lastTps = last !== undefined && last.decodeMs !== null && last.decodeMs > 0 && last.outputTokens !== null ? formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3)) : undefined
+  if (lastTps !== undefined || avgTps !== undefined) {
+    const v = lastTps !== undefined && avgTps !== undefined ? `${lastTps} (${avgTps})` : (lastTps ?? avgTps ?? '')
+    parts.tps = t('tps', { tps: v })
+    values.tps = v
+    if (lastTps !== undefined) {
+      parts.tpsLast = t('tps', { tps: lastTps })
+      values.tpsLast = lastTps
     }
   }
   if (usage !== undefined && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {

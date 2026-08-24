@@ -362,10 +362,10 @@ window.__ModuleLoader__.load({
 			compCounts: "计数",
 			compLlm: "LLM 时长",
 			compTools: "工具时长",
-			compTtft: "TTFT(平均)",
-			compTps: "吐字速度(平均)",
-			compTtftLast: "TTFT(最近一轮)",
-			compTpsLast: "吐字速度(最近一轮)",
+			compTtft: "TTFT(最近+平均)",
+			compTps: "吐字速度(最近+平均)",
+			compTtftLast: "TTFT(仅最近)",
+			compTpsLast: "吐字速度(仅最近)",
 			compTokens: "Token 用量",
 			compCost: "费用",
 			compSepSmall: "小分隔符",
@@ -400,10 +400,10 @@ window.__ModuleLoader__.load({
 			compCounts: "Counts",
 			compLlm: "LLM time",
 			compTools: "Tool time",
-			compTtft: "TTFT (avg)",
-			compTps: "Speed (avg)",
-			compTtftLast: "TTFT (last)",
-			compTpsLast: "Speed (last)",
+			compTtft: "TTFT (last+avg)",
+			compTps: "Speed (last+avg)",
+			compTtftLast: "TTFT (last only)",
+			compTpsLast: "Speed (last only)",
 			compTokens: "Tokens",
 			compCost: "Cost",
 			compSepSmall: "Small sep",
@@ -469,23 +469,27 @@ window.__ModuleLoader__.load({
 					parts.tools = t("tools", { d: formatDuration(stats.toolMs) });
 					values.tools = formatDuration(stats.toolMs);
 				}
-				if (stats.ttftSteps > 0) {
-					parts.ttft = t("ttft", { d: formatDuration(stats.ttftMs / stats.ttftSteps) });
-					values.ttft = formatDuration(stats.ttftMs / stats.ttftSteps);
-				}
-				if (stats.decodeMs > 0) {
-					parts.tps = t("tps", { tps: formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3)) });
-					values.tps = formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3));
+			}
+			const avgTtft = stats !== void 0 && stats.ttftSteps > 0 ? formatDuration(stats.ttftMs / stats.ttftSteps) : void 0;
+			const lastTtft = last !== void 0 && last.ttftMs !== null ? formatDuration(last.ttftMs) : void 0;
+			if (lastTtft !== void 0 || avgTtft !== void 0) {
+				const d = lastTtft !== void 0 && avgTtft !== void 0 ? `${lastTtft} (${avgTtft})` : lastTtft ?? avgTtft ?? "";
+				parts.ttft = t("ttft", { d });
+				values.ttft = d;
+				if (lastTtft !== void 0) {
+					parts.ttftLast = t("ttft", { d: lastTtft });
+					values.ttftLast = lastTtft;
 				}
 			}
-			if (last !== void 0) {
-				if (last.ttftMs !== null) {
-					parts.ttftLast = t("ttft", { d: formatDuration(last.ttftMs) });
-					values.ttftLast = formatDuration(last.ttftMs);
-				}
-				if (last.decodeMs !== null && last.decodeMs > 0 && last.outputTokens !== null) {
-					parts.tpsLast = t("tps", { tps: formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3)) });
-					values.tpsLast = formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3));
+			const avgTps = stats !== void 0 && stats.decodeMs > 0 ? formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3)) : void 0;
+			const lastTps = last !== void 0 && last.decodeMs !== null && last.decodeMs > 0 && last.outputTokens !== null ? formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3)) : void 0;
+			if (lastTps !== void 0 || avgTps !== void 0) {
+				const v = lastTps !== void 0 && avgTps !== void 0 ? `${lastTps} (${avgTps})` : lastTps ?? avgTps ?? "";
+				parts.tps = t("tps", { tps: v });
+				values.tps = v;
+				if (lastTps !== void 0) {
+					parts.tpsLast = t("tps", { tps: lastTps });
+					values.tpsLast = lastTps;
 				}
 			}
 			if (usage !== void 0 && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {

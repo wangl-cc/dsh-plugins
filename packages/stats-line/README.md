@@ -3,11 +3,11 @@
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web plugin: a compact, fully composable replacement for the conversation stats line.
 
 ```text
-5 轮 · 23 步 | LLM 2m42s · 工具 45s | TTFT 1.2s · 45 tok/s | ↑8.4M(97%) ↓68.8K | ≈¥0.0082
+5 轮 · 23 步 | LLM 2m42s · 工具 45s | TTFT 0.9s (1.2s) · 53 (45) tok/s | ↑8.4M(97%) ↓68.8K | ≈¥0.0082
 ```
 
 - **Compact stats line** — shadows the official `id:stats` cell in `conversation.composer.dock` (priority -1, lowest wins; on crash the official cell takes back over). Same data sources as the official StatsLine, shorter labels, flex-wrap layout instead of single-line truncation.
-- **Composable** — the line is a sequence of components (built-ins `counts` `llm` `tools` `ttft` `tps` `ttftLast` `tpsLast` `tokens` `cost` — the `*Last` pair reads the most recent step, small/big separators, custom template components) you arrange in a drag-and-drop composer in the settings GUI, with live preview.
+- **Composable** — the line is a sequence of components (built-ins `counts` `llm` `tools` `ttft` `tps` `ttftLast` `tpsLast` `tokens` `cost` — `ttft`/`tps` show the most recent step with the window average in parentheses, `*Last` shows last-only, small/big separators, custom template components) you arrange in a drag-and-drop composer in the settings GUI, with live preview.
 - **Cost display** — the `cost` component reads the `sessionCost` projection by key (provided by [dsh-session-cost](../session-cost); not installed → the component simply disappears). Currency, exchange rate, decimals and symbol are configured in the `session-cost` settings card.
 
 ## Install
