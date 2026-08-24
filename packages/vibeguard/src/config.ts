@@ -31,8 +31,8 @@ export const ConfigSchema = z.object({
   /** 按 name 启用可选规则(默认关闭的 PII 类,见 src/patterns.ts OPTIONAL_RULES)。 */
   enabledOptionalRules: z.array(z.string()).default([]),
   /** 额外 deny 的敏感路径(子串匹配目标参数字段,~ 会展开为 home)。
-   *  默认空:~/.dsh/redaction/ 的自我保护是硬编码不变量,其余内容形状
-   *  均被规则覆盖,路径级策略留给用户按需配置。 */
+   *  默认空:插件零磁盘状态,没有需要自保护的文件;常见凭据文件的内容
+   *  形状均被规则覆盖,路径级拦截是用户按需配置的硬保证层。 */
   denyPaths: z.array(z.string()).default([]),
   /** 是否脱敏用户消息(agent/pre-step)。 */
   redactUserMessages: z.boolean().default(true),
