@@ -1,4 +1,4 @@
-# AGENTS.md — dsh-stats-line
+# AGENTS.md
 
 DSH web 插件 monorepo:会话费用投影(session-cost)+ 紧凑 stats line(stats-line,含设置 GUI 的可拖拽组件编排器)。设计决策的完整论证在 DESIGN.md;本文件是架构地图与开发纪律;冲突时以代码为准。
 

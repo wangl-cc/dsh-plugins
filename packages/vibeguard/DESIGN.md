@@ -37,13 +37,19 @@ DSH 把"发给 LLM 的请求"定义为**会话日志的纯函数**,且在 `llm/s
 
 ## 存储:零磁盘状态
 
-**什么都不落盘。** HMAC key 进程启动时 `randomBytes(32)` 生成,与映射一起只活在内存:映射按 `Agent.id`(= SessionId)分桶,进程死即全部蒸发。key 不落地意味着字典验证威胁连理论路径都不存在(没有可偷的密钥材料)。
+**什么都不落盘。** HMAC key 进程启动时 `randomBytes(32)` 生成,与映射一起只活在内存:映射按 `Agent.id`(= SessionId)分桶,进程死即全部蒸发。
 
-演化记录:初版是全局 append-only 的 `map.jsonl` + 持久 key;broker 工具引入后占位符成为可兑现凭证,持久全局映射 = 永久 bearer token,遂改为会话内存表 + 持久 key(保住跨重启占位符稳定);最终形态连 key 也移入内存——**持久 key 的唯一收益是"重启后重贴同秘密 → 同一占位符复活"的关联性质,判定不值一个持久秘密材料的攻击面**。代价:重启后所有历史占位符永久失联,不可兑现也不可与新会话关联;旧日志里的占位符就是一次性符号。
+否决的备选:
+
+- **持久映射表(append-only 文件)**:broker 工具使占位符成为可兑现凭证后,持久全局映射 = 永久 bearer token——任何会话拿到占位符字符串(旧日志、别的会话)就能兑现真值。给磁盘表加 ACL 也救不了:权限机制失效时表内容仍在,纯攻击面。
+- **持久 HMAC key**:唯一收益是跨重启的占位符稳定(重贴同秘密 → 同一占位符"复活"),不值一个可偷的密钥材料;key 不落地则字典验证威胁连理论路径都不存在。
+- **TTL(vibeguard 的 1h)**:引入"会话中途占位符突然不可兑现"的失效模式,换来的驻留窗口收窄在 JS 里本就不彻底(字符串不可变、GC 不清零,做不到用完即擦除)。
+
+代价(知情接受):重启后所有历史占位符永久失联——不可兑现,也不可与新会话关联;旧日志里的占位符就是一次性符号。
 
 映射的会话作用域性质:可兑现 ⟺ 真值在本会话、本进程真实流经过;拿不到会话身份的挂点(遥测兜底)进匿名桶,脱敏生效但永不解析(fail-closed)。跨会话碰撞别名不做检测(~10⁻⁷ 量级,且兑现只发生在值真实流过的会话内,别名无安全后果)。subagent 是独立会话时,父会话看到的子会话占位符不可兑现(fail-closed 方向,接受)。
 
-内存安全论证:威胁模型不变(本机可信、出境不可信);host 进程本来就常驻 provider API key(env)、短暂经手脱敏前的明文工具结果,会话表不改变风险量级。残余风险逐项过:swap(macOS 默认加密)、core dump(Node 默认不产生)、同进程恶意插件(它注册一个排前面的 post-execute 监听器就能看到原文,插件信任是既有假设)、bug 把表序列化进日志(闭包私有 + post-execute 自愈重脱敏)。JS 做不到"用完即擦除"(字符串不可变、GC 不清零);TTL(vibeguard 的 1h)引入会话中途失效的混乱,不加。
+内存安全论证:威胁模型不变(本机可信、出境不可信);host 进程本来就常驻 provider API key(env)、短暂经手脱敏前的明文工具结果,会话表不改变风险量级。残余风险逐项过:swap(macOS 默认加密)、core dump(Node 默认不产生)、同进程恶意插件(它注册一个排前面的 post-execute 监听器就能看到原文,插件信任是既有假设)、bug 把表序列化进日志(闭包私有 + post-execute 自愈重脱敏)。
 
 ## 访问控制(tools/pre-execute,src/guard.ts)
 
@@ -51,9 +57,9 @@ deny 匹配是**字段感知**的:只检查各工具的"目标"参数(`command`/
 
 固有局限(有意的取舍):bash 命令是自由文本,`cat $X`、`cd … && cat …` 这类拼接可绕过子串匹配。deny 防的是"agent 顺手读凭据文件",不是对抗性绕过;真正的兜底仍是 post-execute 脱敏。
 
-**deny 列表的构成(2026-07 两次收窄):** 初版默认拦五个凭据文件路径;后收窄到只剩 redaction 目录自保护(护 HMAC key);全内存化后插件没有任何需要自保护的文件,**deny 变成纯用户策略入口**(`denyPaths` 默认空)。初版那几条(`.credentials.yaml`、`.ssh/id_*` 等)的内容形状全被规则覆盖,路径级拦截是冗余纵深。
+**deny 默认空,是纯用户策略入口。** 不加默认拦截项的理由:插件零磁盘状态,没有需要自保护的文件;常见凭据文件(`.credentials.yaml`、`.ssh/id_*`、`.aws/credentials`、`.netrc`)的内容形状全被规则覆盖,路径级拦截对它们是冗余纵深。需要硬保证(即使规则全失效也不许读)的文件由用户按自己的环境配置 `denyPaths`。
 
-为什么不由 DSH 本体做:DSH 的访问控制是模式制沙箱(read-only / workspace-write / danger-full-access,OS 级执行)+ per-call 审批 + guard 扩展点,**没有 per-path deny**;本插件通过 `tools/pre-execute` waterfall 实现的就是 DSH 预留的接缝。若 DSH 将来出正式的 per-path 策略配置,用户策略条目应迁过去,插件只保留自保护不变量。
+为什么不由 DSH 本体做:DSH 的访问控制是模式制沙箱(read-only / workspace-write / danger-full-access,OS 级执行)+ per-call 审批 + guard 扩展点,**没有 per-path deny**;本插件通过 `tools/pre-execute` waterfall 实现的就是 DSH 预留的接缝。若 DSH 将来出正式的 per-path 策略配置,用户应把策略条目迁过去。
 
 ## broker 工具:secret_exec(src/broker.ts)
 
