@@ -152,6 +152,11 @@ check('跨时代会话各按各价', approx(proj.view(sX).cost, expectedLegacy +
 const parsed = proj.schema.parse(view)
 check('schema 通过', parsed.cost === view.cost && parsed.pricing === 'metered')
 
+// 5b) display 契约:自描述显示串由数据 owner 格式化——metered 精确无 ≈,
+// subscription/mixed/partial 加 ≈,unknown/none/零成本省略
+check('display metered 精确', view.display !== undefined && view.display.cost.startsWith('¥') && !view.display.cost.startsWith('≈'))
+check('带 display 的 view 通过 viewSchema', proj.wire !== undefined && proj.wire.viewSchema.parse(view).display !== undefined)
+
 // 6) 订阅制 provider:token 照计,按刊例价估算参考金额,pricing=subscription
 let s2 = proj.init()
 s2 = proj.apply(s2, {
@@ -166,6 +171,7 @@ const v2 = proj.view(s2)
 // Kimi K3 刊例价:input 70213×$3.0/M + output 17520×$15/M + cacheRead 2299648×$0.30/M
 const expectedKimi = (70213 * 3.0 + 17520 * 15.0 + 2299648 * 0.30) / 1e6
 check('订阅制按刊例价估算', approx(v2.cost, expectedKimi) && v2.pricing === 'subscription')
+check('display subscription 加 ≈', v2.display !== undefined && v2.display.cost.startsWith('≈'))
 check('订阅制 token 照计', v2.input === 70213 && v2.cacheRead === 2299648)
 
 // 6b) 无刊例价的订阅端点:cost 恒 0,只显示订阅标签
@@ -180,6 +186,7 @@ s5 = proj.apply(s5, {
 })
 const v5 = proj.view(s5)
 check('无刊例价订阅不计费', v5.cost === 0 && v5.pricing === 'subscription')
+check('零成本省略 display', v5.display === undefined)
 
 // 7) 未知 provider:绝不套用 deepseek 价
 let s3 = proj.init()
@@ -193,6 +200,7 @@ s3 = proj.apply(s3, {
 })
 const v3 = proj.view(s3)
 check('未知 provider 不计费', v3.cost === 0 && v3.pricing === 'unknown')
+check('unknown 省略 display', v3.display === undefined)
 
 // 8) 混合会话(deepseek + kimi):metered 部分照算,pricing=mixed
 let s4 = proj.init()

@@ -43,3 +43,13 @@ export function resolveCurrency(config: PluginConfig | undefined): Currency {
     decimals: Math.max(0, Math.min(10, Math.floor(Number.isFinite(decimals) ? decimals : preset.decimals))),
   }
 }
+
+/** 美元成本 × 汇率,按币种格式化;数值过小时自动放宽小数位。 */
+export function formatMoney(usdCost: number, currency: Currency): string {
+  const value = usdCost * (currency.rate > 0 ? currency.rate : 1)
+  let effective = currency.decimals
+  if (value > 0 && value < Math.pow(10, -effective)) effective = effective + 2
+  const fixed = value.toFixed(effective)
+  const trimmed = fixed.includes('.') ? fixed.replace(/0+$/, '').replace(/\.$/, '') : fixed
+  return currency.symbol + trimmed
+}

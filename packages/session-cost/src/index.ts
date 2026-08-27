@@ -39,7 +39,7 @@
 import { z } from 'zod'
 import Schema from '@deepseek-ai/schemastery'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
-import { currencyCode, resolveCurrency, type Currency, type PluginConfig } from './currency'
+import { currencyCode, formatMoney, resolveCurrency, type Currency, type PluginConfig } from './currency'
 
 export const name = 'session-cost'
 
@@ -170,6 +170,12 @@ export interface SessionCostView extends Totals {
   partial: boolean
   /** 宿主端按 loader 行 config 解析的显示币种,客户端直接采用。 */
   currency: Currency
+  /**
+   * 自描述的费用显示串('≈¥0.0082'):数据 owner 负责格式化,消费方
+   * 原样摆放。metered 精确;subscription/mixed/partial 加 ≈ 估算标记;
+   * unknown/none/零成本省略(绝不展示按别家价表套出的数字)。
+   */
+  display?: { cost: string }
 }
 
 /** dsh-session-projection 的投影单元契约。 */
@@ -419,6 +425,7 @@ const sessionCostSchema = z.object({
     decimals: z.number(),
     rate: z.number(),
   }),
+  display: z.object({ cost: z.string() }).optional(),
 })
 
 /**
@@ -443,7 +450,12 @@ export function makeSessionCostProjection(providers: Record<string, ProviderEntr
     // 已知路由的费用是真数,不因为有未知路由就整体隐藏;unknown 只在
     // 全无可计费样本时独占 pricing。partial 提示客户端加 ≈(下限而非全额)。
     const pricing = metered && subscription ? 'mixed' : metered ? 'metered' : subscription ? 'subscription' : unknown ? 'unknown' : 'none'
-    return { ...state.totals, pricing, partial: unknown && (metered || subscription), currency: holder.current }
+    const partial = unknown && (metered || subscription)
+    // 自描述显示串:估算标记 ≈ 与币种格式化都在数据 owner 侧完成。
+    const approximate = pricing === 'mixed' || pricing === 'subscription' || partial
+    const showable = (pricing === 'metered' || pricing === 'mixed' || pricing === 'subscription') && state.totals.cost > 0
+    const display = showable ? { cost: (approximate ? '≈' : '') + formatMoney(state.totals.cost, holder.current) } : undefined
+    return { ...state.totals, pricing, partial, currency: holder.current, ...(display !== undefined ? { display } : {}) }
   }
   return {
     key: 'sessionCost',

@@ -9,7 +9,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) web plugin
   - `subscription` providers with published API list prices (currently `kimi-coding` / k3, k3-256k, kimi-k2.7-code, k2.7-code) yield an estimate of what the tokens would have cost (`pricing: 'subscription'` / `'mixed'`, plus `partial` when some usage is unbillable);
   - unknown providers/models are never billed at someone else's price sheet — `pricing: 'unknown'`.
   - Price changes are append-only eras with effective dates; historical events always bill at the era in effect at their event time. Billing changes bump `stateVersion`.
-- **The view** (sent to the browser via the projection `wire` channel): token totals + `cost` (USD) + `pricing` + `partial` + the resolved display `currency` (`{ symbol, decimals, rate }`).
+- **The view** (sent to the browser via the projection `wire` channel): token totals + `cost` (USD) + `pricing` + `partial` + the resolved display `currency` (`{ symbol, decimals, rate }`) + `display.cost` — a self-describing formatted string (`≈¥0.0082`), so consumers place it verbatim without knowing currency or estimate rules.
 - **The `session-cost` settings namespace** — display currency, exchange rate, decimals, symbol. Layering: schema defaults < loader-row config < user layer (Settings → Plugins → session-cost, or `~/.dsh/settings.yaml`). Exchange rates resolve explicit pin → online lookup (frankfurter.dev, at startup + daily) → built-in fallback table. Rates affect display only (applied at view time), so online lookups never compromise replay determinism.
 
 ## Install
