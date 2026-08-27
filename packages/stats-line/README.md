@@ -24,16 +24,21 @@ Settings live in the `stats-line` namespace — edit them in **Settings → Plug
 
 ```yaml
 stats-line:
-  items:                          # component sequence (order = display order)
-    - { kind: counts }            # built-ins: counts llm tools ttft tps ttftLast tpsLast tokens cost
-    - { kind: sep, size: big }    # separator: small '·' or big '|'
-    - { kind: custom, template: '↑{input}{cache} ↓{output}' }
-    - { kind: sep, size: big }
-    - { kind: cost }              # fed by the sessionCost projection (dsh-session-cost)
-  css: '.csl-root{font-size:11px}'
+  sections:                                # the line: an array of sections; sections are joined with '|'
+    - components: [$turns, $steps]         # a section: components joined with '·' (sep overrides)
+    - components: ['LLM $llm', 'Tools $tools']
+    - components:
+        - show: 'TTFT $ttftLast'           # a component is a template string ($name refs, $$ = literal $)
+          hint: 'avg $ttft'                # optional tooltip (native title attr; same template rules)
+        - show: $tpsLast
+          hint: 'avg $tps'
+    - sep: ''                              # tight section: no separator between components
+      components: ['↑$input', '($cache)', ' ↓$output']
+    - components: [$cost]                  # fed by the sessionCost projection (dsh-session-cost)
+  style: { fontSize: '12px', color: '', fontFamily: '', gap: '', sectionGap: '' }
 ```
 
-A component whose data is unavailable (e.g. `cost` on an unknown provider, or without dsh-session-cost) is not rendered, and separators collapse automatically (edges dropped, adjacent ones keep the bigger). Custom components interpolate pre-formatted placeholders: `{turns}` `{steps}` `{llm}` `{tools}` `{ttft}` `{tps}` `{ttftLast}` `{tpsLast}` `{input}` `{output}` `{cache}` `{cost}`. Empty/absent fields fall back to defaults. Loader-row `config` (e.g. in `cordis.patch.yml`) still works — it becomes the base layer underneath GUI edits.
+A component whose `$ref` is unavailable (e.g. `$cost` on an unknown provider or without dsh-session-cost) is not rendered, and separators are generated at render time — a vanished component or section never leaves one behind. Values are pre-formatted self-describing quantities: `$turns` `$steps` `$llm` `$tools` `$ttft` `$tps` `$ttftLast` `$tpsLast` (last-turn, matching the per-message footer) `$input` `$output` `$cache` `$cost`. Empty `sections`/`style` fields fall back to defaults (the built-in default localizes labels). Loader-row `config` (e.g. in `cordis.patch.yml`) still works as the base layer; legacy `items` configs are migrated automatically.
 
 ## Develop
 

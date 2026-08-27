@@ -5,7 +5,7 @@ DSH（DeepSeek Harness）web 插件的 pnpm monorepo，包在 `packages/` 下。
 ## 包
 
 - `session-cost`（dsh-session-cost）：会话费用投影 `sessionCost` + 计价表 + `session-cost` settings 命名空间。
-- `stats-line`（dsh-stats-line）：stats line cell + 设置 GUI 组件编排器（`stats-line` 命名空间）。
+- `stats-line`（dsh-stats-line）：stats line cell + 设置 GUI chip 编排器（`stats-line` 命名空间；模板组件模型：组件 = `$name` 插值模板串，行 = 小组数组，连接符自动生成——详见 DESIGN.md）。
 - `vibeguard`（dsh-vibeguard）：写日志前密钥脱敏 + `secret_exec` broker 工具；本包另有自己的 AGENTS.md/DESIGN.md。
 
 ## 命令

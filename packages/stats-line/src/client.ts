@@ -1,112 +1,103 @@
 /**
- * dsh-stats-line 浏览器端:紧凑 stats line 组件。
+ * dsh-stats-line 浏览器端:紧凑 stats line 组件 + 设置 GUI(chip 编排器)。
  *
  * 构建时被 rolldown 包装成 __ModuleLoader__ 工厂格式(见 rolldown.config.js
  * 的 banner/footer),react 与 ./format 之外无依赖;运行时由 dsh-client-modules
  * 以 classic script 加载。
  *
- * 替换官方 stats line(conversation.composer.dock 的 id:"stats" 条目):
+ * 替换官方官方 stats line(conversation.composer.dock 的 id:"stats" 条目):
  * 以 priority:-1 注册同 id 条目完成 cell shadowing(最低 priority 渲染;
  * 本组件崩溃时 abdicate,官方条目自动接管作为回退)。
  *
- * 数据源与官方 StatsLine 完全一致:
- *  - sessionStats / tokenUsage 投影(优先);
- *  - 窗口内节点折叠(投影缺失时的回退,共享自 ./format)。
- *
- * 差异:文案更紧凑(轮/步、工具、TTFT、↑↓),布局 flex-wrap 可换行,
- * 不再单行截断丢内容;行尾追加本会话费用(宿主 sessionCost 投影,
- * 装了 dsh-cost-meter 时自动优先用其 costUsage 投影)。费用按投影的
- * pricing 标记渲染:metered 精确金额;mixed / 有刊例价的 subscription
- * 加 ≈(唯一标记,不再叠加订阅标签);unknown/none/无刊例价订阅隐藏。
+ * 模型(详见 ./format 头注):行 = 小组数组;组件 = 模板串('$name' 插值,
+ * '$$' 转义);值是纯数据(单位/≈/¥ 由生产侧携带);连接符渲染时按层级
+ * 生成。费用值 $cost 透传 sessionCost 投影的 display 字段(数据 owner
+ * dsh-session-cost 负责格式化与 ≈ 标记);平台值(turns/steps/llm/tools/
+ * ttft/tps/input/cache/output)在本侧格式化,单位词随 locale 字典。
  */
 
 import * as React from 'react'
 import {
-  assistantStepReading,
   billedInputTokens,
   cacheHitPercent,
   deriveStats,
   lastStepReading,
-  type LastStepReading,
   formatDuration,
-  formatMoney,
   formatTokens,
   formatTokensPerSecond,
-  renderStatsLineItems,
-  resolveCurrency,
-  DEFAULT_STATS_LINE_ITEMS,
-  makeItem,
-  normalizeItem,
-  ITEM_KINDS,
+  normalizeSections,
+  parseTemplateTokens,
+  renderStatsLine,
+  serializeTokens,
   type ChatNode,
-  type Currency,
   type DerivedStats,
-  type PluginConfig,
-  type StatsLineItem,
+  type LastStepReading,
+  type StatsLineComponent,
+  type StatsLinePiece,
+  type StatsLineSection,
+  type StatsLineToken,
   type TokenUsage,
 } from './format'
 
 const h = React.createElement
 
-const NS = 'stats-compact'
+const NS = 'stats-line'
 
 /** settings 命名空间:按用户面对的功能域命名,不用包名。 */
 const STATS_LINE_NS = 'stats-line'
 
-// ── 样式(跟随 --dsw-* 主题变量) ──────────────────────────────────────
+// ── 样式(dsl- 前缀 = dsh-stats-line,稳定公开锚点;跟随 --dsw-* 主题变量) ──
 
 const css = [
-  '/* dsh-stats-line: 紧凑 stats line */',
-  '.csl-root{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:2px 0;box-sizing:border-box;width:100%;max-width:var(--dsh-chat-content-width,748px);margin:0 auto;padding:4px calc(var(--dsh-composer-side-clearance,16px) + 16px) 0;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}',
-  '.csl-item{display:inline-flex;align-items:baseline;white-space:nowrap;font-variant-numeric:tabular-nums}',
-  '.csl-sep{color:var(--dsw-alias-separator-primary);margin:0 6px}',
-  '.csl-sepsm{color:var(--dsw-alias-separator-primary);margin:0 4px}',
-  '/* 设置卡片(settings.plugin.item):复刻平台 PluginCard/ValueField 视觉契约 */',
-  '.slc-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}',
-  '.slc-card:hover{border-color:var(--dsw-alias-label-dimmed)}',
-  '.slc-card.slc-open{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
-  '.slc-header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}',
-  '.slc-headtext{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}',
-  '.slc-name{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}',
-  '.slc-desc{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}',
-  '.slc-chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}',
-  '.slc-open .slc-chevron{transform:rotate(180deg)}',
-  '.slc-body{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}',
-  '.slc-field{flex-direction:column;gap:6px;padding:12px 0;display:flex}',
-  '.slc-field+.slc-field{border-top:1px solid var(--dsw-alias-border-l2)}',
-  '.slc-label{min-width:0;color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:1.5}',
-  '.slc-hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}',
-  '.slc-row{display:flex;gap:8px;align-items:center}',
-  /* flex:1 只用于 .slc-row 横向布局;纵向 .slc-field 里 flex-basis:0 会把 height 顶塌 */
-  '.slc-input{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);height:34px;font:inherit;color:var(--dsw-alias-label-primary);border-radius:8px;padding:0 12px;font-size:13px;line-height:1.5;box-sizing:border-box}',
-  '.slc-row .slc-input{flex:1;min-width:0}',
-  '.slc-field .slc-input{width:100%}',
-  '.slc-input:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}',
-  '.slc-input:disabled{color:var(--dsw-alias-label-tertiary);cursor:default}',
-  '.slc-btn{font:inherit;color:var(--dsw-alias-label-secondary);cursor:pointer;background:0 0;border:none;padding:0;font-size:12px;line-height:1.5;flex:none}',
-  '.slc-btn:hover:not(:disabled){color:var(--dsw-alias-label-primary)}',
-  '.slc-btn:disabled{cursor:default;opacity:.4}',
-  '.slc-add{align-self:flex-start;appearance:none;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}',
-  '.slc-add:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}',
-  '.slc-add:disabled{opacity:.4;cursor:default}',
-  '.slc-pending{white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);border-radius:999px;flex:none;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}',
-  '.slc-footer{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding:12px 0 4px;display:flex}',
-  '.slc-discard,.slc-save{appearance:none;font:inherit;cursor:pointer;border:1px solid #0000;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}',
-  '.slc-discard{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0}',
-  '.slc-discard:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}',
-  '.slc-save{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}',
-  '.slc-discard:disabled,.slc-save:disabled{opacity:.4;cursor:default}',
-  '.slc-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}',
-  '.slc-grip{color:var(--dsw-alias-label-tertiary);cursor:grab;user-select:none;flex:none;padding:0 2px;font-size:13px;line-height:1}',
-  '.slc-row.slc-dragging{opacity:.45}',
-  '.slc-chip{font:inherit;color:var(--dsw-alias-label-secondary);cursor:pointer;background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:5px 10px;font-size:12px;line-height:1.5;flex:none}',
-  '.slc-chip:disabled{cursor:default;opacity:.6}',
-  '.slc-itemname{color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;flex:1;min-width:0;padding:5px 0}',
-  '.slc-preview{border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;padding:8px 12px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;word-break:break-all}',
-  '.slc-advanced{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:0 12px}',
-  '.slc-advancedsummary{cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:13px;font-weight:500;padding:10px 0;user-select:none}',
-  '.slc-advanced[open] .slc-advancedsummary{border-bottom:1px solid var(--dsw-alias-border-l2)}',
+  '.dsl-root{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:2px 0;box-sizing:border-box;width:100%;max-width:var(--dsh-chat-content-width,748px);margin:0 auto;padding:4px calc(var(--dsh-composer-side-clearance,16px) + 16px) 0;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}',
+  '.dsl-item{display:inline-flex;align-items:baseline;white-space:nowrap;font-variant-numeric:tabular-nums}',
+  '.dsl-sep{color:var(--dsw-alias-separator-primary);margin:0 var(--dsl-gap,4px)}',
+  '.dsl-sepbig{color:var(--dsw-alias-separator-primary);margin:0 var(--dsl-section-gap,6px)}',
+  // 设置卡片(外壳复刻平台 PluginCard/ValueField 的视觉契约)
+  '.dsl-card{appearance:none;width:100%;margin:0;border:0;background:0;padding:0;font:inherit;color:inherit;text-align:left;cursor:pointer;list-style:none;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}',
+  '.dsl-card:hover{background:var(--dsw-alias-bg-hover)}',
+  '.dsl-card::-webkit-details-marker{display:none}',
+  '.dsl-headtext{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}',
+  '.dsl-title{font-size:14px;line-height:20px;color:var(--dsw-alias-label-primary)}',
+  '.dsl-desc{font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary)}',
+  '.dsl-arrow{flex:none;width:16px;height:16px;color:var(--dsw-alias-label-tertiary);transition:transform .15s ease}',
+  'details[open] > .dsl-card .dsl-arrow{transform:rotate(90deg)}',
+  '.dsl-body{flex-direction:column;gap:12px;padding:0 16px 14px;display:flex}',
+  '.dsl-preview{flex-wrap:wrap;align-items:center;gap:2px 0;padding:8px 10px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary);display:flex}',
+  '.dsl-strip{flex-direction:column;gap:8px;display:flex}',
+  '.dsl-section{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px 8px;display:flex;flex-wrap:wrap;align-items:center;gap:4px}',
+  '.dsl-sectionhead{display:flex;align-items:center;gap:4px;margin-right:4px}',
+  '.dsl-sepsel{appearance:none;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-primary);color:var(--dsw-alias-label-secondary);font-size:11px;padding:1px 4px;cursor:pointer}',
+  '.dsl-sectionx{border:0;background:0;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:11px;padding:0 2px}',
+  '.dsl-chip{display:inline-flex;align-items:center;gap:1px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:1px 3px;background:var(--dsw-alias-bg-primary);font-size:12px;line-height:18px}',
+  '.dsl-chip.dsl-dragging{opacity:.45}',
+  '.dsl-tok{display:inline-flex;align-items:center;white-space:nowrap;padding:0 3px;border-radius:4px}',
+  '.dsl-tok-ref{background:var(--dsw-alias-bg-secondary);color:var(--dsw-alias-label-primary)}',
+  '.dsl-tok-text{color:var(--dsw-alias-label-secondary);cursor:text}',
+  '.dsl-tok-text:hover{background:var(--dsw-alias-bg-hover)}',
+  '.dsl-tokx{border:0;background:0;padding:0 0 0 2px;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:10px;line-height:1}',
+  '.dsl-tokedit{width:7em;border:0;border-bottom:1px solid var(--dsw-alias-border-l1);background:0;font:inherit;color:inherit;font-size:12px;padding:0 2px;outline:0}',
+  '.dsl-chipx{border:0;background:0;padding:0 1px;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:11px}',
+  '.dsl-grip{cursor:grab;color:var(--dsw-alias-label-tertiary);padding:0 2px;user-select:none}',
+  '.dsl-ghost{color:var(--dsw-alias-separator-primary);opacity:.6;padding:0 2px;font-size:11px;user-select:none}',
+  '.dsl-palette{display:flex;flex-wrap:wrap;gap:4px;align-items:center}',
+  '.dsl-palgroup{font-size:11px;color:var(--dsw-alias-label-tertiary);margin-right:2px}',
+  '.dsl-palbtn{border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-primary);color:var(--dsw-alias-label-secondary);font-size:11px;padding:1px 6px;cursor:pointer}',
+  '.dsl-palbtn:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}',
+  '.dsl-field{flex-direction:column;gap:6px;padding:4px 0;display:flex}',
+  '.dsl-label{font-size:12px;color:var(--dsw-alias-label-secondary)}',
+  '.dsl-input{appearance:none;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-primary);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;padding:6px 8px;outline:0}',
+  '.dsl-input:focus{border-color:var(--dsw-alias-border-l1)}',
+  '.dsl-stylerow{display:flex;gap:8px;flex-wrap:wrap}',
+  '.dsl-stylerow .dsl-field{flex:1;min-width:110px;padding:0}',
+  '.dsl-footer{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding:12px 0 4px;display:flex}',
+  '.dsl-save{border:0;border-radius:8px;background:var(--dsw-alias-btn-primary-bg);color:var(--dsw-alias-btn-primary-fg);font-size:12px;padding:6px 14px;cursor:pointer}',
+  '.dsl-save:disabled{opacity:.45;cursor:default}',
+  '.dsl-discard{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:0;color:var(--dsw-alias-label-secondary);font-size:12px;padding:6px 14px;cursor:pointer}',
+  '.dsl-discard:disabled{opacity:.45;cursor:default}',
+  '.dsl-rohint{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
 ].join('\n')
+
 if (typeof document !== 'undefined' && document.querySelector('style[data-plugin-css="dsh-stats-line"]') === null) {
   const tag = document.createElement('style')
   tag.dataset.plugin = 'dsh-stats-line'
@@ -115,118 +106,65 @@ if (typeof document !== 'undefined' && document.querySelector('style[data-plugin
   document.head.appendChild(tag)
 }
 
-// ── 紧凑文案字典(zh/en) ───────────────────────────────────────────────
+// ── 文案字典(zh/en) ─────────────────────────────────────────────────
 
 const zh = {
-  counts: '{turns} 轮 · {steps} 步',
-  llm: 'LLM {d}',
-  tools: '工具 {d}',
-  ttft: 'TTFT {d}',
-  ttftCombined: 'TTFT {last}(平均 {avg})',
-  tps: '{tps} tok/s',
-  tpsCombined: '{last} tok/s(平均 {avg})',
-  tokens: '↑{in}{suffix} ↓{out}',
-  cacheSuffix: '({p}%)',
-  estimated: '≈',
-  cardItems: '组件序列',
-  cardItemsHint: '按住 ⠿ 拖拽排序;点 ·/| 切换分隔符大小;费用组件的币种设置在 session-cost 卡片里。自定义组件用 {placeholder} 插值:{turns} {steps} {llm} {tools} {ttft} {tps} {input} {output} {cache} {cost} {ttftLast} {tpsLast};引用缺失数据的组件不渲染;清空恢复默认。',
-  cardAdd: '添加:',
-  compCounts: '计数',
-  compLlm: 'LLM 时长',
-  compTools: '工具时长',
-  compTtft: 'TTFT(最近+平均)',
-  compTps: '吐字速度(最近+平均)',
-  compTtftLast: 'TTFT(仅最近)',
-  compTpsLast: '吐字速度(仅最近)',
-  compTokens: 'Token 用量',
-  compCost: '费用',
-  compSepSmall: '小分隔符',
-  compSepBig: '大分隔符',
-  compCustom: '自定义',
-  cardCustomPlaceholder: '{turns} 轮 · {steps} 步 …',
-  cardDragHandle: '按住拖拽排序',
-  cardSepToggle: '点击切换大小',
-  cardRemove: '删除',
-  cardCss: '附加 CSS',
+  unitTurns: ' 轮',
+  unitSteps: ' 步',
+  toolsLabel: '工具 ',
+  avgPrefix: '平均 ',
   cardTitle: 'Stats line',
-  cardDescription: '紧凑统计行的组件编排。',
-  cardUnsaved: '未保存',
-  cardDiscard: '放弃',
+  cardDesc: '自定义输入框上方 stats line 的内容与样式。组件是模板字符串:$name 引用值($$ 写字面 $);值不可得时组件自动消失。',
+  preview: '预览',
+  paletteSession: '会话:',
+  paletteTokens: 'Token:',
+  paletteCost: '费用:',
+  addText: '+文本',
+  addSection: '+新小组',
+  deleteSection: '删除小组',
+  sepDot: '· 默认',
+  sepSpace: '空格',
+  sepNone: '无(贴死)',
+  styleLabel: '样式',
+  styleFontSize: '字号(如 12px)',
+  styleColor: '颜色(如 #8a8a8a)',
+  styleFontFamily: '字体',
+  styleGap: '组件间距',
+  styleSectionGap: '小组间距',
+  readonly: '此配置由部署管理,只读。',
   cardSave: '保存',
-  cardPreview: '预览(示例数据)',
-  cardAdvanced: '高级',
-  cardStartFromDefaults: '从默认组件开始',
+  cardDiscard: '放弃',
 }
-const en = {
-  counts: '{turns} turns · {steps} steps',
-  llm: 'LLM {d}',
-  tools: 'Tools {d}',
-  ttft: 'TTFT {d}',
-  ttftCombined: 'TTFT {last} (avg {avg})',
-  tps: '{tps} tok/s',
-  tpsCombined: '{last} tok/s (avg {avg})',
-  tokens: '↑{in} {suffix} ↓{out}',
-  cacheSuffix: '({p}%)',
-  estimated: '≈',
-  cardItems: 'Components',
-  cardItemsHint: 'Hold ⠿ to drag and reorder; click ·/| to toggle separator size; currency settings for the cost component live in the session-cost card. Custom components interpolate {placeholders}: {turns} {steps} {llm} {tools} {ttft} {tps} {input} {output} {cache} {cost} {ttftLast} {tpsLast}; components referencing unavailable data are not rendered; clear all to restore defaults.',
-  cardAdd: 'Add:',
-  compCounts: 'Counts',
-  compLlm: 'LLM time',
-  compTools: 'Tool time',
-  compTtft: 'TTFT (last+avg)',
-  compTps: 'Speed (last+avg)',
-  compTtftLast: 'TTFT (last only)',
-  compTpsLast: 'Speed (last only)',
-  compTokens: 'Tokens',
-  compCost: 'Cost',
-  compSepSmall: 'Small sep',
-  compSepBig: 'Big sep',
-  compCustom: 'Custom',
-  cardCustomPlaceholder: '{turns} turns · {steps} steps …',
-  cardDragHandle: 'Drag to reorder',
-  cardSepToggle: 'Click to toggle size',
-  cardRemove: 'Remove',
-  cardCss: 'Extra CSS',
+
+const en: typeof zh = {
+  unitTurns: ' turns',
+  unitSteps: ' steps',
+  toolsLabel: 'Tools ',
+  avgPrefix: 'avg ',
   cardTitle: 'Stats line',
-  cardDescription: 'Component composition of the compact stats line.',
-  cardUnsaved: 'Unsaved',
-  cardDiscard: 'Discard',
+  cardDesc: 'Customize the stats line above the composer. A component is a template string: $name references a value ($$ for a literal $); a component whose values are unavailable disappears.',
+  preview: 'Preview',
+  paletteSession: 'Session:',
+  paletteTokens: 'Tokens:',
+  paletteCost: 'Cost:',
+  addText: '+Text',
+  addSection: '+Section',
+  deleteSection: 'Delete section',
+  sepDot: '· default',
+  sepSpace: 'space',
+  sepNone: 'none (tight)',
+  styleLabel: 'Style',
+  styleFontSize: 'Font size (e.g. 12px)',
+  styleColor: 'Color (e.g. #8a8a8a)',
+  styleFontFamily: 'Font family',
+  styleGap: 'Component gap',
+  styleSectionGap: 'Section gap',
+  readonly: 'Managed by deployment; read-only.',
   cardSave: 'Save',
-  cardPreview: 'Preview (sample data)',
-  cardAdvanced: 'Advanced',
-  cardStartFromDefaults: 'Start from defaults',
+  cardDiscard: 'Discard',
 }
 
-// ── slot cell 契约(slot renderer 注入的最小 props 面) ──────────────────
-
-interface SessionCostView {
-  cost?: number
-  pricing?: 'none' | 'metered' | 'subscription' | 'mixed' | 'unknown'
-  /** 有未知路由用量未计入 cost(金额是已知部分的下限)→ 加 ≈。 */
-  partial?: boolean
-  /** 宿主端按 loader 行 config 解析的显示币种(浏览器端没有 config 通道)。 */
-  currency?: Currency
-}
-
-interface CellProps {
-  useSession?: <T>(selector: (state: { chat: { legacy: { nodes: ChatNode[] } } }) => T) => T
-  useProjection?: {
-    (key: 'tokenUsage'): TokenUsage | undefined
-    (key: 'sessionStats'): DerivedStats | undefined
-    (key: 'costUsage'): { cost?: number } | undefined
-    (key: 'sessionCost'): SessionCostView | undefined
-  }
-  t: (key: keyof typeof zh, params?: Record<string, string | number>) => string
-}
-
-/** 声明式 UI 配置(从 settings 命名空间 stats-line 的解析文档提取)。 */
-interface UiConfig {
-  items?: StatsLineItem[]
-  css?: string
-}
-
-// ── settings 命名空间客户端(stats-line) ────────────────────────────────
+// ── settings plumbing ────────────────────────────────────────────────
 
 /** settingsScope.bind 返回的命名空间控制器(dsh-client-ui-settings)。 */
 interface SettingsSnapshot {
@@ -253,19 +191,6 @@ const settingsStore = {
   getSnapshot: () => settingsController?.getSnapshot(),
 }
 
-/** 防御性提取 UI 配置:空序列/空串转 undefined(= 内置默认);item 逐个归一化,非法的丢弃。 */
-function uiFromDoc(doc: unknown): UiConfig {
-  if (typeof doc !== 'object' || doc === null) return {}
-  const d = doc as { items?: unknown; css?: unknown }
-  const ui: UiConfig = {}
-  if (Array.isArray(d.items)) {
-    const items = d.items.map(normalizeItem).filter((item): item is StatsLineItem => item !== undefined)
-    if (items.length > 0) ui.items = items
-  }
-  if (typeof d.css === 'string' && d.css !== '') ui.css = d.css
-  return ui
-}
-
 /** 客户端插件上下文的最小面(locale/slots/settingsScope 服务 + effect)。 */
 interface ClientContext {
   get: (name: string) => unknown
@@ -281,98 +206,110 @@ interface SlotsService {
   register: (options: { name: string; id?: string; key?: string; order?: number; priority?: number; locale: string }, component: React.ComponentType<CellProps>) => unknown
 }
 
-// ── 组件 ───────────────────────────────────────────────────────────────
+// ── 文档解析 ─────────────────────────────────────────────────────────
 
-let CURRENCY: Currency = resolveCurrency(undefined)
-
-/** 防御性校验投影下发的币种;形状不对就用本地缺省。 */
-function validCurrency(value: Currency | undefined): Currency | undefined {
-  if (typeof value !== 'object' || value === null) return undefined
-  if (typeof value.symbol !== 'string' || value.symbol.length === 0) return undefined
-  if (typeof value.rate !== 'number' || !Number.isFinite(value.rate) || value.rate <= 0) return undefined
-  if (typeof value.decimals !== 'number' || !Number.isFinite(value.decimals)) return undefined
-  return value
+interface StyleDoc {
+  fontSize?: string
+  color?: string
+  fontFamily?: string
+  gap?: string
+  sectionGap?: string
 }
 
-/** 组件文本(parts)+ 自定义模板占位符词表(values);cell 渲染与设置卡片预览共用同一份逻辑。 */
-function buildValues(
+/** 防御性提取 sections:空数组 → undefined(= 内置默认)。 */
+function sectionsFromDoc(doc: unknown): StatsLineSection[] | undefined {
+  if (typeof doc !== 'object' || doc === null) return undefined
+  const sections = normalizeSections((doc as Record<string, unknown>).sections)
+  return sections.length > 0 ? sections : undefined
+}
+
+/** 防御性提取 style:空串哨兵转 undefined。 */
+function styleFromDoc(doc: unknown): StyleDoc {
+  if (typeof doc !== 'object' || doc === null) return {}
+  const s = (doc as Record<string, unknown>).style
+  if (typeof s !== 'object' || s === null) return {}
+  const r = s as Record<string, unknown>
+  const pick = (key: keyof StyleDoc): string | undefined => (typeof r[key] === 'string' && (r[key] as string) !== '' ? (r[key] as string) : undefined)
+  return { fontSize: pick('fontSize'), color: pick('color'), fontFamily: pick('fontFamily'), gap: pick('gap'), sectionGap: pick('sectionGap') }
+}
+
+// ── 值词表与默认序列 ──────────────────────────────────────────────────
+
+/** sessionCost 投影 view 的消费面:只要数据 owner 格式化好的显示串。 */
+interface SessionCostView {
+  display?: { cost?: unknown }
+}
+
+/** 值 = 纯数据:单位由生产侧携带(轮/步随 locale;s/tok/s/% 烘死)。 */
+function buildVocabulary(
   stats: DerivedStats | undefined,
   usage: TokenUsage | undefined,
   sessionCost: SessionCostView | undefined,
-  costUsage: { cost?: number } | undefined,
-  currency: Currency,
-  t: CellProps['t'],
   last: LastStepReading | undefined,
-): { parts: Record<string, string | undefined>; values: Record<string, string | undefined> } {
-  // 数据不可得时该组件键不存在(渲染时整项丢弃);仅 {cache} 在 tokens 可得
-  // 但无缓存数据时为空串(括号烘在值里)。
-  const parts: Record<string, string | undefined> = {}
-  const values: Record<string, string | undefined> = {}
+  t: (key: keyof typeof zh) => string,
+): Record<string, string | undefined> {
+  const v: Record<string, string | undefined> = {}
   if (stats !== undefined && stats.steps > 0) {
-    parts.counts = t('counts', { turns: stats.turns, steps: stats.steps })
-    values.turns = String(stats.turns)
-    values.steps = String(stats.steps)
-    if (stats.llmMs > 0) {
-      parts.llm = t('llm', { d: formatDuration(stats.llmMs) })
-      values.llm = formatDuration(stats.llmMs)
-    }
-    if (stats.toolMs > 0) {
-      parts.tools = t('tools', { d: formatDuration(stats.toolMs) })
-      values.tools = formatDuration(stats.toolMs)
-    }
+    v.turns = `${stats.turns}${t('unitTurns')}`
+    v.steps = `${stats.steps}${t('unitSteps')}`
+    if (stats.llmMs > 0) v.llm = formatDuration(stats.llmMs)
+    if (stats.toolMs > 0) v.tools = formatDuration(stats.toolMs)
+    if (stats.ttftSteps > 0) v.ttft = formatDuration(stats.ttftMs / stats.ttftSteps)
+    if (stats.decodeMs > 0) v.tps = `${formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3))} tok/s`
   }
-  // ttft/tps:最近一轮为主(当前服务状况),括号里是窗口平均(基线参照);
-  // 最近读数不可得(投影路径/窗口折叠)时退回纯平均。最近读数始终从窗口
-  // 节点读取——sessionStats 投影不含逐步数据。
-  const avgTtft = stats !== undefined && stats.ttftSteps > 0 ? formatDuration(stats.ttftMs / stats.ttftSteps) : undefined
-  const lastTtft = last !== undefined && last.ttftMs !== null ? formatDuration(last.ttftMs) : undefined
-  if (lastTtft !== undefined || avgTtft !== undefined) {
-    const d = lastTtft ?? avgTtft ?? ''
-    parts.ttft = lastTtft !== undefined && avgTtft !== undefined ? t('ttftCombined', { last: lastTtft, avg: avgTtft }) : t('ttft', { d })
-    values.ttft = parts.ttft
-    if (lastTtft !== undefined) {
-      parts.ttftLast = t('ttft', { d: lastTtft })
-      values.ttftLast = lastTtft
-    }
-  }
-  const avgTps = stats !== undefined && stats.decodeMs > 0 ? formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1e3)) : undefined
-  const lastTps = last !== undefined && last.decodeMs !== null && last.decodeMs > 0 && last.outputTokens !== null ? formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3)) : undefined
-  if (lastTps !== undefined || avgTps !== undefined) {
-    const v = lastTps ?? avgTps ?? ''
-    parts.tps = lastTps !== undefined && avgTps !== undefined ? t('tpsCombined', { last: lastTps, avg: avgTps }) : t('tps', { tps: v })
-    values.tps = parts.tps
-    if (lastTps !== undefined) {
-      parts.tpsLast = t('tps', { tps: lastTps })
-      values.tpsLast = lastTps
+  // 最近一轮:始终从窗口节点读取(sessionStats 投影不含逐步数据)。
+  if (last !== undefined) {
+    if (last.ttftMs !== null) v.ttftLast = formatDuration(last.ttftMs)
+    if (last.decodeMs !== null && last.decodeMs > 0 && last.outputTokens !== null) {
+      v.tpsLast = `${formatTokensPerSecond(last.outputTokens / (last.decodeMs / 1e3))} tok/s`
     }
   }
   if (usage !== undefined && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {
-    // 缓存命中率是输入侧属性:挂在 ↑ 后面(如 ↑8.4M(97%) ↓68.8K)。
-    const cache = cacheHitPercent(usage)
-    const suffix = cache !== null ? t('cacheSuffix', { p: cache }) : ''
-    parts.tokens = t('tokens', { in: formatTokens(billedInputTokens(usage)), suffix, out: formatTokens(usage.outputTokens) })
-    values.input = formatTokens(billedInputTokens(usage))
-    values.output = formatTokens(usage.outputTokens)
-    values.cache = suffix
+    v.input = formatTokens(billedInputTokens(usage))
+    v.output = formatTokens(usage.outputTokens)
+    const pct = cacheHitPercent(usage)
+    if (pct !== null) v.cache = `${pct}%`
   }
-  // 费用:装了 dsh-cost-meter 优先(多 provider 计费);否则看本插件投影的
-  // pricing 标记——metered 精确显示;subscription 有刊例价时显示 ≈ 估算
-  // (无则不显示);mixed 加 ≈;partial(有未知路由用量未计入)也加 ≈,因为
-  // 金额只是已知部分的下限;unknown/none 不显示(绝不展示按别家价表套出来
-  // 的数字)。≈ 是唯一的非精确标记,不再叠加订阅标签。
-  const costUsageCost = typeof costUsage?.cost === 'number' && costUsage.cost > 0 ? costUsage.cost : null
-  if (costUsageCost !== null) {
-    parts.cost = formatMoney(costUsageCost, currency)
-  } else if (sessionCost !== undefined) {
-    const pricing = sessionCost.pricing
-    const cost = typeof sessionCost.cost === 'number' ? sessionCost.cost : 0
-    const approximate = pricing === 'mixed' || pricing === 'subscription' || sessionCost.partial === true
-    if ((pricing === 'metered' || pricing === 'mixed' || pricing === 'subscription') && cost > 0) {
-      parts.cost = (approximate ? t('estimated') : '') + formatMoney(cost, currency)
-    }
+  const cost = sessionCost?.display?.cost
+  if (typeof cost === 'string' && cost !== '') v.cost = cost
+  return v
+}
+
+/** 内置默认序列(label 随 locale);sections 空数组哨兵时使用。 */
+function makeDefaultSections(t: (key: keyof typeof zh) => string): StatsLineSection[] {
+  return [
+    { components: ['$turns', '$steps'] },
+    { components: ['LLM $llm', `${t('toolsLabel')}$tools`] },
+    {
+      components: [
+        { show: 'TTFT $ttftLast', hint: `${t('avgPrefix')}$ttft` },
+        { show: '$tpsLast', hint: `${t('avgPrefix')}$tps` },
+      ],
+    },
+    { sep: '', components: ['↑$input', '($cache)', ' ↓$output'] },
+    { components: ['$cost'] },
+  ]
+}
+
+// ── cell 渲染 ────────────────────────────────────────────────────────
+
+/** pieces → span 列表(cell 与卡片预览共用);hint 落在 title 属性上。 */
+function renderPieces(pieces: StatsLinePiece[], keyPrefix: string): React.ReactElement[] {
+  return pieces.map((piece, i) =>
+    piece.type === 'sep'
+      ? h('span', { className: piece.section ? 'dsl-sepbig' : 'dsl-sep', 'aria-hidden': true, key: `${keyPrefix}${i}` }, piece.text)
+      : h('span', { className: 'dsl-item', title: piece.hint, key: `${keyPrefix}${i}` }, piece.text),
+  )
+}
+
+interface CellProps {
+  useSession?: <T>(selector: (state: { chat: { legacy: { nodes: ChatNode[] } } }) => T) => T
+  useProjection?: {
+    (key: 'tokenUsage'): TokenUsage | undefined
+    (key: 'sessionStats'): DerivedStats | undefined
+    (key: 'sessionCost'): SessionCostView | undefined
   }
-  values.cost = parts.cost
-  return { parts, values }
+  t: (key: keyof typeof zh, params?: Record<string, string | number>) => string
 }
 
 function CompactStatsLine(props: CellProps): React.ReactElement | null {
@@ -382,270 +319,405 @@ function CompactStatsLine(props: CellProps): React.ReactElement | null {
   const settledNodes = useSession !== undefined ? useSession((s) => s.chat.legacy.nodes) : undefined
   const usage = useProjection !== undefined ? useProjection('tokenUsage') : undefined
   const projected = useProjection !== undefined ? useProjection('sessionStats') : undefined
-  const costUsage = useProjection !== undefined ? useProjection('costUsage') : undefined // dsh-cost-meter(多 provider 计费,优先)
-  const sessionCost = useProjection !== undefined ? useProjection('sessionCost') : undefined // 本插件自带投影
+  const sessionCost = useProjection !== undefined ? useProjection('sessionCost') : undefined
   // 声明式 UI 配置:settings 命名空间 stats-line(设置 GUI / settings.yaml
   // 编辑,实时生效);loader config 是 base 层,由宿主端合成后持久化。
-  const ui = uiFromDoc(React.useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot)?.value)
+  const doc = React.useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot)?.value
   const stats: DerivedStats | undefined = projected ?? (settledNodes !== undefined ? deriveStats(settledNodes) : undefined)
-  // 币种跟随投影 view(宿主端 settings 解析 + 在线汇率),本地缺省兜底。
-  const currency = validCurrency(sessionCost?.currency) ?? CURRENCY
   const last = settledNodes !== undefined ? lastStepReading(settledNodes) : undefined
-  const { parts, values } = buildValues(stats, usage, sessionCost, costUsage, currency, t, last)
-  const pieces = renderStatsLineItems(ui.items ?? DEFAULT_STATS_LINE_ITEMS, parts, values)
-  const css = ui.css ?? null
-  if (pieces.length === 0 && css === null) return null
-  const children: React.ReactElement[] = pieces.map((piece, i) =>
-    piece.type === 'sep'
-      ? h('span', { className: piece.size === 'big' ? 'csl-sep' : 'csl-sepsm', 'aria-hidden': true, key: 'p' + i }, piece.size === 'big' ? '|' : '·')
-      : h('span', { className: 'csl-item', key: 'p' + i }, piece.text),
-  )
-  // 声明式 css 逃生舱:随配置响应式更新,随组件卸载消失。
-  if (css !== null) children.push(h('style', { key: 'uicss' }, css))
-  return h('div', { className: 'csl-root' }, children)
+  const sections = sectionsFromDoc(doc) ?? makeDefaultSections(t)
+  const values = buildVocabulary(stats, usage, sessionCost, last, t)
+  const pieces = renderStatsLine(sections, values)
+  const style = styleFromDoc(doc)
+  if (pieces.length === 0) return null
+  const rootStyle: Record<string, string> = {}
+  if (style.fontSize !== undefined) rootStyle.fontSize = style.fontSize
+  if (style.color !== undefined) rootStyle.color = style.color
+  if (style.fontFamily !== undefined) rootStyle.fontFamily = style.fontFamily
+  if (style.gap !== undefined) rootStyle['--dsl-gap'] = style.gap
+  if (style.sectionGap !== undefined) rootStyle['--dsl-section-gap'] = style.sectionGap
+  return h('div', { className: 'dsl-root', style: rootStyle as React.CSSProperties }, renderPieces(pieces, 'p'))
 }
 
 // ── 设置卡片(settings.plugin.item,key = stats-line) ────────────────────
 // 外壳(可折叠 li + 标题/描述/箭头)与字段样式复刻平台 PluginCard/ValueField
 // 的视觉契约(那些 CSS module 与组件是包内私产,不可跨包 import)。
+// 编辑模型:chip = 模板串 parse 出的 token 视图;存储 = 模板串,两者经
+// parseTemplateTokens/serializeTokens 无损互转。
 
-/** 读命名空间文档的某个字段(防御性,缺省给哨兵)。 */
-function docField<T>(doc: unknown, key: string, fallback: T): T {
-  if (typeof doc !== 'object' || doc === null) return fallback
-  const value = (doc as Record<string, unknown>)[key]
-  return value === undefined ? fallback : (value as T)
-}
-
-/** 预览用示例数据(固定值,与真实格式化同路径)。 */
 const SAMPLE_STATS: DerivedStats = { turns: 5, steps: 23, llmMs: 162_000, toolMs: 45_000, ttftMs: 1_200, ttftSteps: 1, decodeTokens: 2_025, decodeMs: 45_000 }
 const SAMPLE_USAGE: TokenUsage = { uncachedInputTokens: 252_000, cacheReadTokens: 8_148_000, cacheWriteTokens: 0, outputTokens: 68_800 }
-const SAMPLE_COST: SessionCostView = { cost: 0.0082 / 7.2, pricing: 'subscription' }
+const SAMPLE_COST: SessionCostView = { display: { cost: '≈¥0.0082' } }
 const SAMPLE_LAST: LastStepReading = { ttftMs: 980, decodeMs: 38_000, outputTokens: 1_862 }
 
-/** 草稿里的组件项与文档同形(组件已无带校验的数值属性)。 */
-type DraftItem = StatsLineItem
+/** 调色板:按领域分组的值清单。 */
+const PALETTE: { group: 'paletteSession' | 'paletteTokens' | 'paletteCost'; refs: string[] }[] = [
+  { group: 'paletteSession', refs: ['turns', 'steps', 'llm', 'tools', 'ttft', 'tps', 'ttftLast', 'tpsLast'] },
+  { group: 'paletteTokens', refs: ['input', 'cache', 'output'] },
+  { group: 'paletteCost', refs: ['cost'] },
+]
 
-/** 卡片草稿:组件序列 + css;Save 时才过滤落盘。 */
+interface StyleDraft {
+  fontSize: string
+  color: string
+  fontFamily: string
+  gap: string
+  sectionGap: string
+}
+
 interface CardDraft {
-  items: DraftItem[]
-  css: string
+  sections: StatsLineSection[]
+  style: StyleDraft
 }
 
-const toDraftItem = (item: StatsLineItem): DraftItem => item
-
-/** 草稿项 → 文档项(空模板自定义组件丢弃)。 */
-function fromDraftItem(item: DraftItem): StatsLineItem {
-  return { kind: item.kind, size: item.size, template: item.template.trim() }
-}
-
-/** 命名空间文档 → 草稿。 */
-function draftFromDoc(doc: unknown): CardDraft {
-  const items = docField<unknown[]>(doc, 'items', [])
-    .map(normalizeItem)
-    .filter((item): item is StatsLineItem => item !== undefined)
-    .map(toDraftItem)
-  return { items, css: docField(doc, 'css', '') }
-}
-
-/** 组件 kind → 文案键。 */
-function itemLabelKey(item: { kind: StatsLineItem['kind']; size: StatsLineItem['size'] }): keyof typeof zh {
-  switch (item.kind) {
-    case 'counts':
-      return 'compCounts'
-    case 'llm':
-      return 'compLlm'
-    case 'tools':
-      return 'compTools'
-    case 'ttft':
-      return 'compTtft'
-    case 'tps':
-      return 'compTps'
-    case 'ttftLast':
-      return 'compTtftLast'
-    case 'tpsLast':
-      return 'compTpsLast'
-    case 'tokens':
-      return 'compTokens'
-    case 'cost':
-      return 'compCost'
-    case 'sep':
-      return item.size === 'big' ? 'compSepBig' : 'compSepSmall'
-    default:
-      return 'compCustom'
+function draftFromDoc(doc: unknown, t: (key: keyof typeof zh) => string): CardDraft {
+  const style = styleFromDoc(doc)
+  return {
+    sections: structuredClone(sectionsFromDoc(doc) ?? makeDefaultSections(t)),
+    style: {
+      fontSize: style.fontSize ?? '',
+      color: style.color ?? '',
+      fontFamily: style.fontFamily ?? '',
+      gap: style.gap ?? '',
+      sectionGap: style.sectionGap ?? '',
+    },
   }
 }
 
-/** 调色板:可添加的内置组件;分隔符与自定义单独给。 */
-const PALETTE_KINDS = ['counts', 'llm', 'tools', 'ttft', 'tps', 'ttftLast', 'tpsLast', 'tokens', 'cost'] as const
+/** 组件 show 模板 → tokens;对象形态保留 hint。 */
+function componentTokens(component: StatsLineComponent): StatsLineToken[] {
+  return parseTemplateTokens(typeof component === 'string' ? component : component.show)
+}
 
-/**
- * 设置 GUI 卡片:可拖拽的组件编排器。组件序列 = 内置数据组件 + 大小分隔符
- * + 自定义模板组件;币种设置在 session-cost 插件的卡片里。编辑模型
- * 与第一方卡片一致:全部进本地草稿(dirty 显示未保存徽标),Save 一次性
- * 落盘,Discard 放弃。拖拽:按住手柄(⠿)拖动,dragover 实时换位。
- * 非 loopback 浏览器 writable=false:只读展示。
- */
+/** tokens 写回组件(保留 hint)。 */
+function withTokens(component: StatsLineComponent, tokens: StatsLineToken[]): StatsLineComponent {
+  const show = serializeTokens(tokens)
+  return typeof component === 'string' ? show : { show, ...(component.hint !== undefined ? { hint: component.hint } : {}) }
+}
+
 function StatsLineCard(props: CellProps): React.ReactElement | null {
   const t = props.t
-  const snap = React.useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot)
-  const [open, setOpen] = React.useState(false)
+  const snapshot = React.useSyncExternalStore(settingsStore.subscribe, settingsStore.getSnapshot)
+  const writable = snapshot?.writable !== false
   const [draft, setDraft] = React.useState<CardDraft | null>(null)
-  const [dragFrom, setDragFrom] = React.useState<number | null>(null)
-  const [gripActive, setGripActive] = React.useState<number | null>(null)
-  if (settingsController === undefined) return null
-  const controller = settingsController
-  const writable = snap?.writable !== false
-  const stored = draftFromDoc(snap?.value)
-  const value = draft ?? stored
-  const dirty = draft !== null
-  const edit = (patch: Partial<CardDraft>) => setDraft({ ...value, ...patch })
-  const editItem = (i: number, patch: Partial<DraftItem>) => edit({ items: value.items.map((item, j) => (j === i ? { ...item, ...patch } : item)) })
-  const moveItem = (from: number, to: number) => {
-    const next = value.items.slice()
-    const [moved] = next.splice(from, 1)
-    next.splice(to, 0, moved)
-    edit({ items: next })
+  // 行内文本 token 编辑:{ 小组, 组件, token } 位置;value 为编辑中的文本。
+  const [editing, setEditing] = React.useState<{ si: number; ci: number; ti: number; value: string } | null>(null)
+  // 调色板插入目标:选中的 chip;无则追加到末尾小组的新组件。
+  const [selected, setSelected] = React.useState<{ si: number; ci: number } | null>(null)
+  const [gripActive, setGripActive] = React.useState<{ si: number; ci: number } | null>(null)
+  const [dragFrom, setDragFrom] = React.useState<{ si: number; ci: number } | null>(null)
+  if (snapshot === undefined) return null
+
+  const effective = draft ?? draftFromDoc(snapshot.value, t)
+  const edit = (fn: (d: CardDraft) => void): void => {
+    const next = draft ?? draftFromDoc(snapshot.value, t)
+    fn(next)
+    setDraft({ ...next })
   }
+  const editComponent = (si: number, ci: number, tokens: StatsLineToken[]): void =>
+    edit((d) => {
+      const section = d.sections[si]
+      if (section === undefined) return
+      section.components = section.components.map((c, i) => (i === ci ? withTokens(c, tokens) : c))
+    })
+
+  const dirty = draft !== null
   const save = (): void => {
-    const items = value.items.map(fromDraftItem).filter((item) => item.kind !== 'custom' || item.template !== '')
-    if (JSON.stringify(items) !== JSON.stringify(stored.items.map(fromDraftItem))) {
-      if (items.length === 0) void controller.unset('items')
-      else void controller.set('items', items)
-    }
-    if (value.css !== stored.css) {
-      if (value.css === '') void controller.unset('css')
-      else void controller.set('css', value.css)
+    if (draft === null || settingsController === undefined) return
+    const sections = normalizeSections(draft.sections)
+    if (sections.length === 0) void settingsController.unset('sections')
+    else void settingsController.set('sections', sections)
+    for (const key of ['fontSize', 'color', 'fontFamily', 'gap', 'sectionGap'] as const) {
+      const value = draft.style[key]
+      if (value === '') void settingsController.unset(`style.${key}`)
+      else void settingsController.set(`style.${key}`, value)
     }
     setDraft(null)
+    setSelected(null)
+    setEditing(null)
   }
-  // 预览:示例数据走与 cell 完全相同的渲染路径(组件可得性/分隔符收敛都真实)。
-  const sample = buildValues(SAMPLE_STATS, SAMPLE_USAGE, SAMPLE_COST, undefined, CURRENCY, t, SAMPLE_LAST)
-  const previewItems: StatsLineItem[] = (value.items.length > 0 ? value.items : DEFAULT_STATS_LINE_ITEMS.map(toDraftItem)).map(fromDraftItem)
-  const previewText = renderStatsLineItems(previewItems, sample.parts, sample.values)
-    .map((piece) => (piece.type === 'sep' ? (piece.size === 'big' ? '|' : '·') : piece.text))
-    .join(' ')
-  const body = open
-    ? h('div', { className: 'slc-body', key: 'body' }, [
-        h('div', { className: 'slc-field', key: 'preview' }, [
-          h('label', { className: 'slc-label', key: 'l' }, t('cardPreview')),
-          h('div', { className: 'slc-preview', key: 'box' }, previewText),
-        ]),
-        h('div', { className: 'slc-field', key: 'items' }, [
-          h('label', { className: 'slc-label', key: 'l' }, t('cardItems')),
-          h('p', { className: 'slc-hint', key: 'hint' }, t('cardItemsHint')),
-          ...value.items.map((item, i) =>
+
+  // 预览与线上 cell 走同一条 renderStatsLine 代码路径(示例数据)。
+  const sampleValues = buildVocabulary(SAMPLE_STATS, SAMPLE_USAGE, SAMPLE_COST, SAMPLE_LAST, t)
+  const preview = renderStatsLine(effective.sections, sampleValues)
+
+  const addRef = (name: string): void => {
+    if (!writable) return
+    edit((d) => {
+      const target = selected !== null ? d.sections[selected.si]?.components[selected.ci] : undefined
+      if (selected !== null && target !== undefined) {
+        const tokens = [...componentTokens(target), { type: 'ref' as const, name }]
+        d.sections[selected.si]!.components[selected.ci] = withTokens(target, tokens)
+        return
+      }
+      // 无选中:追加到末尾小组(无小组则新建)。
+      if (d.sections.length === 0) d.sections.push({ components: [] })
+      d.sections[d.sections.length - 1]!.components.push(`$${name}`)
+    })
+  }
+  const addText = (): void => {
+    if (!writable) return
+    let target: { si: number; ci: number; ti: number } | null = null
+    edit((d) => {
+      if (d.sections.length === 0) d.sections.push({ components: [] })
+      const si = selected !== null && d.sections[selected.si] !== undefined ? selected.si : d.sections.length - 1
+      const section = d.sections[si]!
+      let ci = selected !== null && selected.si === si && section.components[selected.ci] !== undefined ? selected.ci : section.components.length
+      if (ci === section.components.length) section.components.push('')
+      const comp = section.components[ci]!
+      const tokens = [...componentTokens(comp), { type: 'text' as const, text: '' }]
+      section.components[ci] = withTokens(comp, tokens)
+      target = { si, ci, ti: tokens.length - 1 }
+    })
+    if (target !== null) setEditing({ ...(target as { si: number; ci: number; ti: number }), value: '' })
+  }
+  const addSection = (): void => {
+    if (!writable) return
+    edit((d) => {
+      d.sections.push({ components: [''] })
+    })
+    setEditing(null)
+  }
+
+  const commitEditing = (cancel: boolean): void => {
+    if (editing === null) return
+    const { si, ci, ti, value } = editing
+    setEditing(null)
+    if (cancel) return
+    edit((d) => {
+      const comp = d.sections[si]?.components[ci]
+      if (comp === undefined) return
+      const tokens = componentTokens(comp)
+      if (value === '') tokens.splice(ti, 1)
+      else tokens[ti] = { type: 'text', text: value }
+      d.sections[si]!.components[ci] = withTokens(comp, tokens)
+    })
+  }
+
+  const moveComponent = (from: { si: number; ci: number }, to: { si: number; ci: number }): void => {
+    if (from.si === to.si && from.ci === to.ci) return
+    edit((d) => {
+      const comp = d.sections[from.si]?.components[from.ci]
+      if (comp === undefined) return
+      d.sections[from.si]!.components.splice(from.ci, 1)
+      const toCi = to.si === from.si && to.ci > from.ci ? to.ci - 1 : to.ci
+      d.sections[to.si]!.components.splice(toCi, 0, comp)
+    })
+  }
+
+  const sectionEls: React.ReactElement[] = []
+  effective.sections.forEach((section, si) => {
+    const chips: React.ReactElement[] = []
+    section.components.forEach((component, ci) => {
+      const tokens = componentTokens(component)
+      const pos = { si, ci }
+      const isSelected = selected !== null && selected.si === si && selected.ci === ci
+      const isDragging = dragFrom !== null && dragFrom.si === si && dragFrom.ci === ci
+      chips.push(
+        h(
+          'span',
+          {
+            className: isDragging ? 'dsl-chip dsl-dragging' : 'dsl-chip',
+            key: `c${si}.${ci}`,
+            style: isSelected ? { borderColor: 'var(--dsw-alias-border-l1)' } : undefined,
+            draggable: gripActive !== null && gripActive.si === si && gripActive.ci === ci,
+            onClick: () => setSelected(pos),
+            onDragStart: () => setDragFrom(pos),
+            onDragEnd: () => setDragFrom(null),
+            onDragOver: (e: React.DragEvent<HTMLSpanElement>) => {
+              if (dragFrom === null) return
+              e.preventDefault()
+              moveComponent(dragFrom, pos)
+              setDragFrom(pos)
+            },
+          },
+          [
             h(
-              'div',
+              'span',
               {
-                className: dragFrom === i ? 'slc-row slc-dragging' : 'slc-row',
-                key: 'r' + i,
-                draggable: gripActive === i,
-                onDragStart: (e: React.DragEvent<HTMLDivElement>) => {
-                  e.dataTransfer.effectAllowed = 'move'
-                  e.dataTransfer.setData('text/plain', String(i))
-                  setDragFrom(i)
+                className: 'dsl-grip',
+                key: 'g',
+                onMouseDown: () => setGripActive(pos),
+                onMouseUp: () => setGripActive(null),
+              },
+              '⠿',
+            ),
+            ...tokens.map((token, ti) => {
+              if (token.type === 'ref') {
+                return h('span', { className: 'dsl-tok dsl-tok-ref', key: `t${ti}` }, [
+                  token.name,
+                  h(
+                    'button',
+                    {
+                      className: 'dsl-tokx',
+                      key: 'x',
+                      type: 'button',
+                      'aria-label': 'remove',
+                      onClick: (e: React.MouseEvent) => {
+                        e.stopPropagation()
+                        editComponent(si, ci, tokens.filter((_, i) => i !== ti))
+                      },
+                    },
+                    '✕',
+                  ),
+                ])
+              }
+              const isEditing = editing !== null && editing.si === si && editing.ci === ci && editing.ti === ti
+              if (isEditing) {
+                return h('input', {
+                  className: 'dsl-tokedit',
+                  key: `t${ti}`,
+                  autoFocus: true,
+                  value: editing.value,
+                  disabled: !writable,
+                  onChange: (e: React.ChangeEvent<HTMLInputElement>) => setEditing({ ...editing, value: e.target.value }),
+                  onBlur: () => commitEditing(false),
+                  onKeyDown: (e: React.KeyboardEvent) => {
+                    if (e.key === 'Enter') commitEditing(false)
+                    if (e.key === 'Escape') commitEditing(true)
+                  },
+                  onClick: (e: React.MouseEvent) => e.stopPropagation(),
+                })
+              }
+              return h(
+                'span',
+                {
+                  className: 'dsl-tok dsl-tok-text',
+                  key: `t${ti}`,
+                  onClick: (e: React.MouseEvent) => {
+                    e.stopPropagation()
+                    if (writable) setEditing({ si, ci, ti, value: token.text })
+                  },
                 },
-                onDragOver: (e: React.DragEvent<HTMLDivElement>) => {
-                  e.preventDefault()
-                  e.dataTransfer.dropEffect = 'move'
-                  if (dragFrom !== null && dragFrom !== i) {
-                    moveItem(dragFrom, i)
-                    setDragFrom(i)
-                  }
-                },
-                onDragEnd: () => {
-                  setDragFrom(null)
-                  setGripActive(null)
+                token.text === '' ? ' ' : token.text,
+              )
+            }),
+            h(
+              'button',
+              {
+                className: 'dsl-chipx',
+                key: 'x',
+                type: 'button',
+                'aria-label': 'remove component',
+                onClick: (e: React.MouseEvent) => {
+                  e.stopPropagation()
+                  edit((d) => {
+                    d.sections[si]?.components.splice(ci, 1)
+                  })
                 },
               },
-              [
-                h(
-                  'span',
-                  {
-                    className: 'slc-grip',
-                    key: 'grip',
-                    title: t('cardDragHandle'),
-                    'aria-hidden': true,
-                    onMouseDown: () => setGripActive(i),
-                    onMouseUp: () => setGripActive(null),
-                  },
-                  '⠿',
-                ),
-                item.kind === 'sep'
-                  ? h('button', { className: 'slc-chip', key: 'c', type: 'button', disabled: !writable, title: t('cardSepToggle'), onClick: () => editItem(i, { size: item.size === 'small' ? 'big' : 'small' }) }, (item.size === 'small' ? '·' : '|') + ' ' + t(itemLabelKey(item)))
-                  : item.kind === 'custom'
-                    ? h('input', {
-                        className: 'slc-input',
-                        key: 'c',
-                        type: 'text',
-                        value: item.template,
-                        placeholder: t('cardCustomPlaceholder'),
-                        disabled: !writable,
-                        onChange: (e: React.ChangeEvent<HTMLInputElement>) => editItem(i, { template: e.target.value }),
-                      })
-                    : h('span', { className: 'slc-itemname', key: 'c' }, t(itemLabelKey(item))),
-                h('button', { className: 'slc-btn', key: 'rm', type: 'button', disabled: !writable, onClick: () => edit({ items: value.items.filter((_, j) => j !== i) }) }, t('cardRemove')),
-              ],
+              '✕',
             ),
-          ),
-          h('div', { className: 'slc-actions', key: 'palette' }, [
-            h('span', { className: 'slc-hint', key: 'pl' }, t('cardAdd')),
-            ...PALETTE_KINDS.map((kind) =>
-              h('button', { className: 'slc-add', key: kind, type: 'button', disabled: !writable, onClick: () => edit({ items: [...value.items, toDraftItem(makeItem(kind))] }) }, t(itemLabelKey(makeItem(kind)))),
-            ),
-            h('button', { className: 'slc-add', key: 'seps', type: 'button', disabled: !writable, onClick: () => edit({ items: [...value.items, toDraftItem(makeItem('sep'))] }) }, '·'),
-            h('button', { className: 'slc-add', key: 'sepb', type: 'button', disabled: !writable, onClick: () => edit({ items: [...value.items, toDraftItem(makeItem('sep', { size: 'big' }))] }) }, '|'),
-            h('button', { className: 'slc-add', key: 'custom', type: 'button', disabled: !writable, onClick: () => edit({ items: [...value.items, toDraftItem(makeItem('custom'))] }) }, t('compCustom')),
-            value.items.length === 0
-              ? h('button', { className: 'slc-add', key: 'defaults', type: 'button', disabled: !writable, onClick: () => edit({ items: DEFAULT_STATS_LINE_ITEMS.map(toDraftItem) }) }, t('cardStartFromDefaults'))
-              : null,
-          ]),
-        ]),
-        h('details', { className: 'slc-advanced', key: 'adv' }, [
-          h('summary', { className: 'slc-advancedsummary', key: 's' }, t('cardAdvanced')),
-          h('div', { className: 'slc-field', key: 'css' }, [
-            h('label', { className: 'slc-label', key: 'l' }, t('cardCss')),
-            h('input', {
-              className: 'slc-input',
-              key: 'in',
-              type: 'text',
-              value: value.css,
-              disabled: !writable,
-              onChange: (e: React.ChangeEvent<HTMLInputElement>) => edit({ css: e.target.value }),
-            }),
-          ]),
-        ]),
-        h('div', { className: 'slc-footer', key: 'foot' }, [
-          h('button', { className: 'slc-discard', key: 'd', type: 'button', disabled: !dirty, onClick: () => setDraft(null) }, t('cardDiscard')),
-          h('button', { className: 'slc-save', key: 's', type: 'button', disabled: !dirty || !writable, onClick: save }, t('cardSave')),
-        ]),
-      ])
-    : null
-  return h('li', { className: open ? 'slc-card slc-open' : 'slc-card' }, [
-    h(
-      'button',
-      { className: 'slc-header', key: 'head', type: 'button', 'aria-expanded': open, onClick: () => setOpen(!open) },
-      [
-        h('span', { className: 'slc-headtext', key: 'txt' }, [
-          h('span', { className: 'slc-name', key: 'n' }, t('cardTitle')),
-          h('span', { className: 'slc-desc', key: 'd' }, t('cardDescription')),
-        ]),
-        dirty ? h('span', { className: 'slc-pending', key: 'pd' }, t('cardUnsaved')) : null,
-        h(
-          'svg',
-          { className: 'slc-chevron', key: 'ch', width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true },
-          h('path', { d: 'M3.5 5.25 7 8.75l3.5-3.5', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+          ],
         ),
-      ],
-    ),
-    body,
+      )
+      // 幽灵连接符:展示用,不可编辑(生成规则见 renderStatsLine)。
+      if (ci < section.components.length - 1) chips.push(h('span', { className: 'dsl-ghost', key: `s${si}.${ci}`, 'aria-hidden': true }, section.sep ?? '·'))
+    })
+    sectionEls.push(
+      h('div', { className: 'dsl-section', key: `sec${si}` }, [
+        h('span', { className: 'dsl-sectionhead', key: 'head' }, [
+          h(
+            'select',
+            {
+              className: 'dsl-sepsel',
+              key: 'sep',
+              value: section.sep === undefined ? 'default' : section.sep === '' ? 'none' : section.sep === ' ' ? 'space' : 'default',
+              disabled: !writable,
+              onChange: (e: React.ChangeEvent<HTMLSelectElement>) =>
+                edit((d) => {
+                  const s = d.sections[si]
+                  if (s === undefined) return
+                  if (e.target.value === 'default') delete s.sep
+                  else if (e.target.value === 'none') s.sep = ''
+                  else s.sep = ' '
+                }),
+            },
+            [h('option', { key: 'd', value: 'default' }, t('sepDot')), h('option', { key: 's', value: 'space' }, t('sepSpace')), h('option', { key: 'n', value: 'none' }, t('sepNone'))],
+          ),
+          h(
+            'button',
+            {
+              className: 'dsl-sectionx',
+              key: 'x',
+              type: 'button',
+              'aria-label': t('deleteSection'),
+              disabled: !writable,
+              onClick: () =>
+                edit((d) => {
+                  d.sections.splice(si, 1)
+                }),
+            },
+            '✕',
+          ),
+        ]),
+        ...chips,
+      ]),
+    )
+    // 小组间幽灵 '|'
+    if (si < effective.sections.length - 1) sectionEls.push(h('span', { className: 'dsl-ghost', key: `big${si}`, 'aria-hidden': true }, '|'))
+  })
+
+  const styleField = (key: keyof StyleDraft, label: string): React.ReactElement =>
+    h('div', { className: 'dsl-field', key }, [
+      h('label', { className: 'dsl-label', key: 'l' }, label),
+      h('input', {
+        className: 'dsl-input',
+        key: 'in',
+        type: 'text',
+        value: effective.style[key],
+        disabled: !writable,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => edit((d) => void (d.style[key] = e.target.value)),
+      }),
+    ])
+
+  return h('li', { className: 'dsl-itemcard' }, [
+    h('details', { key: 'det' }, [
+      h('summary', { className: 'dsl-card', key: 's' }, [
+        h('div', { className: 'dsl-headtext', key: 'ht' }, [
+          h('span', { className: 'dsl-title', key: 't' }, t('cardTitle')),
+          h('span', { className: 'dsl-desc', key: 'd' }, t('cardDesc')),
+        ]),
+        h('svg', { className: 'dsl-arrow', key: 'a', viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true }, [
+          h('path', { d: 'M5.25 3.5 8.75 7l-3.5 3.5', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+        ]),
+      ]),
+      h('div', { className: 'dsl-body', key: 'b' }, [
+        h('div', { className: 'dsl-preview', key: 'p' }, preview.length > 0 ? renderPieces(preview, 'v') : t('preview')),
+        h('div', { className: 'dsl-strip', key: 'strip' }, sectionEls),
+        h('div', { className: 'dsl-palette', key: 'pal' }, [
+          ...PALETTE.flatMap((g) => [
+            h('span', { className: 'dsl-palgroup', key: `g-${g.group}` }, t(g.group)),
+            ...g.refs.map((name) =>
+              h('button', { className: 'dsl-palbtn', key: name, type: 'button', disabled: !writable, onClick: () => addRef(name) }, name),
+            ),
+          ]),
+          h('button', { className: 'dsl-palbtn', key: 'add-text', type: 'button', disabled: !writable, onClick: addText }, t('addText')),
+          h('button', { className: 'dsl-palbtn', key: 'add-sec', type: 'button', disabled: !writable, onClick: addSection }, t('addSection')),
+        ]),
+        h('div', { className: 'dsl-field', key: 'style' }, [
+          h('label', { className: 'dsl-label', key: 'l' }, t('styleLabel')),
+          h('div', { className: 'dsl-stylerow', key: 'r' }, [
+            styleField('fontSize', t('styleFontSize')),
+            styleField('color', t('styleColor')),
+            styleField('fontFamily', t('styleFontFamily')),
+            styleField('gap', t('styleGap')),
+            styleField('sectionGap', t('styleSectionGap')),
+          ]),
+        ]),
+        writable ? null : h('div', { className: 'dsl-rohint', key: 'ro' }, t('readonly')),
+        h('div', { className: 'dsl-footer', key: 'foot' }, [
+          h('button', { className: 'dsl-discard', key: 'd', type: 'button', disabled: !dirty, onClick: () => { setDraft(null); setSelected(null); setEditing(null) } }, t('cardDiscard')),
+          h('button', { className: 'dsl-save', key: 's', type: 'button', disabled: !dirty || !writable, onClick: save }, t('cardSave')),
+        ]),
+      ]),
+    ]),
   ])
 }
 
-// ── 插件入口 ───────────────────────────────────────────────────────────
+// ── 入口 ─────────────────────────────────────────────────────────────
 
-export function apply(ctx: ClientContext, config?: PluginConfig): void {
-  CURRENCY = resolveCurrency(config)
+export function apply(ctx: ClientContext): void {
   const locale = ctx.get('locale') as LocaleService | undefined
   if (locale !== undefined) {
     ctx.effect(() => locale.register(NS, { zh, en }), 'dsh-stats-line: dictionaries')

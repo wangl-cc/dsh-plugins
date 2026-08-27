@@ -1,8 +1,15 @@
 /**
- * 共享纯函数:stats 折叠、token/时长/货币格式化、币种解析。
+ * 共享纯函数:stats 折叠、token/时长格式化、模板组件模型。
  *
  * 被 client bundle(经 rolldown 内联)与 Node 测试(dist/format.js)共用,
  * 杜绝"client 逻辑不可测"的受控重复。零依赖、零副作用、不触碰 DOM/React。
+ *
+ * 模型:行 = 小组(section)数组;小组 = { sep?, components },小组间固定
+ * '|',小组内组件间默认 '·'(sep 可覆盖);组件 = 模板字符串(或
+ * { show, hint? }),串内 $name 插值、$$ 转义字面 $。消失规则逐级:
+ * ref 无值 → 串不可解析;show 不可解析 → 组件消失;小组全空 → 整组消失;
+ * 连接符渲染时按层级生成,无收敛 pass。货币格式化在 dsh-session-cost
+ * (费用数据的 owner),本包不认识币种。
  */
 
 /** tokenUsage 投影 view 的形状(dsh-token-meter)。 */
@@ -166,164 +173,185 @@ export function cacheHitPercent(usage: TokenUsage): number | null {
   return denominator === 0 ? null : Math.round((usage.cacheReadTokens / denominator) * 100)
 }
 
-// ── 会话费用显示(美元成本 → 显示币种) ─────────────────────────────────
+// ── 模板组件模型 ─────────────────────────────────────────────────────
 
-export interface Currency {
-  symbol: string
-  decimals: number
-  rate: number
+/** 组件:模板串,或带 tooltip 的对象形态。模板内 $name 引用值,$$ 转义字面 $。 */
+export type StatsLineComponent = string | { show: string; hint?: string }
+
+/** 小组:组件数组 + 内部连接符覆盖(sep 缺省 '·';'' = 贴死);小组间固定 '|'。 */
+export interface StatsLineSection {
+  sep?: string
+  components: StatsLineComponent[]
 }
 
-/** 内置汇率表:在线查询失败时的兜底(2026-08 参考值,会随时间漂移)。 */
-export const CURRENCY_PRESETS: Record<string, Currency> = {
-  CNY: { symbol: '¥', decimals: 4, rate: 7.2 },
-  USD: { symbol: '$', decimals: 6, rate: 1 },
-  EUR: { symbol: '€', decimals: 6, rate: 0.92 },
-}
+/** 模板的 token 化视图(chip 编辑器的编辑模型;存储模型是模板串)。 */
+export type StatsLineToken = { type: 'text'; text: string } | { type: 'ref'; name: string }
 
 /**
- * loader 行 config 的形状(仅宿主侧可得;浏览器端启动图不携带 config)。
- * currency 为 ISO 4217 币种码;exchangeRate 是显式覆盖(钉死/离线用),
- * 缺省时宿主端在线查询,内置表兜底。
+ * 模板串 → token 序列。$name 为 ref;$$ 为字面 $;孤立 $(后面不跟
+ * 字母)按字面文本处理。serializeTokens 是它的逆(规范化后幂等)。
  */
-export interface PluginConfig {
-  currency?: string
-  exchangeRate?: number
-  decimals?: number
-  symbol?: string
-}
-
-/** 币种码归一:缺省 CNY,大写 ISO 4217;非三字母码原样返回(查 preset 用)。 */
-export function currencyCode(config: PluginConfig | undefined): string {
-  const raw = typeof config?.currency === 'string' && config.currency.length > 0 ? config.currency : 'CNY'
-  return /^[a-zA-Z]{3}$/.test(raw) ? raw.toUpperCase() : raw
-}
-
-/** 解析币种设置(缺省 CNY;rate 为内置表或显式覆盖,在线刷新由宿主端负责)。 */
-export function resolveCurrency(config: PluginConfig | undefined): Currency {
-  const kind = currencyCode(config)
-  const preset = CURRENCY_PRESETS[kind] ?? { symbol: '$', decimals: 2, rate: 1 }
-  const rate = Number(config?.exchangeRate)
-  const decimals = Number(config?.decimals)
-  return {
-    symbol: typeof config?.symbol === 'string' && config.symbol.length > 0 ? config.symbol : preset.symbol,
-    rate: Number.isFinite(rate) && rate > 0 ? rate : preset.rate,
-    decimals: Math.max(0, Math.min(10, Math.floor(Number.isFinite(decimals) ? decimals : preset.decimals))),
-  }
-}
-
-/** 美元成本 × 汇率,按币种格式化;数值过小时自动放宽小数位。 */
-export function formatMoney(usdCost: number, currency: Currency): string {
-  const value = usdCost * (currency.rate > 0 ? currency.rate : 1)
-  let effective = currency.decimals
-  if (value > 0 && value < Math.pow(10, -effective)) effective = effective + 2
-  const fixed = value.toFixed(effective)
-  const trimmed = fixed.includes('.') ? fixed.replace(/0+$/, '').replace(/\.$/, '') : fixed
-  return currency.symbol + trimmed
-}
-
-/** 模板插值:'{a} x {b}' + {a:1,b:2} → '1 x 2';未知占位符原样保留。 */
-export function interpolate(template: string, params: Record<string, string | number>): string {
-  return template.replace(/\{(\w+)\}/g, (match, key: string) => (key in params ? String(params[key]) : match))
-}
-
-/**
- * 渲染声明式模板(stats line 自定义组件):'{name}' 占位符取自
- * values(值是预格式化的显示串);引用了缺失值(undefined)的模板返回
- * undefined——这就是声明式的条件显隐;值为空串的占位符(如 {cache})照常渲染。
- */
-export function renderTemplate(template: string, values: Record<string, string | undefined>): string | undefined {
-  const refs = template.match(/\{(\w+)\}/g) ?? []
-  if (refs.some((ref) => values[ref.slice(1, -1)] === undefined)) return undefined
-  return interpolate(template, values as Record<string, string>)
-}
-
-// ── stats line 组件模型(设置 GUI 的可拖拽单元) ─────────────────────────
-
-/** 组件种类:内置数据组件 + 分隔符 + 自定义模板。 */
-export type StatsLineItemKind = 'counts' | 'llm' | 'tools' | 'ttft' | 'tps' | 'ttftLast' | 'tpsLast' | 'tokens' | 'cost' | 'sep' | 'custom'
-export type StatsLineSepSize = 'small' | 'big'
-
-/**
- * 组件序列的一项。settings 文档里的完整形态(哨兵:'' = 未设置);
- * 仅 sep 用 size,custom 用 template。cost 组件无属性——币种显示配置
- * 在 session-cost 插件自己的命名空间里(费用数据的 owner)。
- */
-export interface StatsLineItem {
-  kind: StatsLineItemKind
-  size: StatsLineSepSize
-  template: string
-}
-
-export const ITEM_KINDS: readonly StatsLineItemKind[] = ['counts', 'llm', 'tools', 'ttft', 'tps', 'ttftLast', 'tpsLast', 'tokens', 'cost', 'sep', 'custom']
-
-export function makeItem(kind: StatsLineItemKind, init?: Partial<StatsLineItem>): StatsLineItem {
-  return { kind, size: 'small', template: '', ...init }
-}
-
-/** 内置默认序列:大组间 '|',组内子项 '·'——与历史内置渲染视觉一致。 */
-export const DEFAULT_STATS_LINE_ITEMS: StatsLineItem[] = [
-  makeItem('counts'),
-  makeItem('sep', { size: 'big' }),
-  makeItem('llm'),
-  makeItem('sep'),
-  makeItem('tools'),
-  makeItem('sep', { size: 'big' }),
-  makeItem('ttft'),
-  makeItem('sep'),
-  makeItem('tps'),
-  makeItem('sep', { size: 'big' }),
-  makeItem('tokens'),
-  makeItem('sep', { size: 'big' }),
-  makeItem('cost'),
-]
-
-/** 防御性归一化任意 JSON 为组件项;非法输入返回 undefined(调用方过滤)。 */
-export function normalizeItem(raw: unknown): StatsLineItem | undefined {
-  if (typeof raw !== 'object' || raw === null) return undefined
-  const r = raw as Record<string, unknown>
-  if (typeof r.kind !== 'string' || !ITEM_KINDS.includes(r.kind as StatsLineItemKind)) return undefined
-  return {
-    kind: r.kind as StatsLineItemKind,
-    size: r.size === 'big' ? 'big' : 'small',
-    template: typeof r.template === 'string' ? r.template : '',
-  }
-}
-
-/** 渲染结果:文本段或分隔符(客户端分别包成 span)。 */
-export type StatsLinePiece = { type: 'text'; text: string } | { type: 'sep'; size: StatsLineSepSize }
-
-/**
- * 组件序列 → 渲染片段。数据不可得的组件(parts 无此键)与引用缺失值的
- * 自定义模板直接消失;分隔符随后收敛:边缘分隔符删除,相邻分隔符留大的。
- */
-export function renderStatsLineItems(
-  items: StatsLineItem[],
-  parts: Record<string, string | undefined>,
-  values: Record<string, string | undefined>,
-): StatsLinePiece[] {
-  const pieces: StatsLinePiece[] = []
-  for (const item of items) {
-    if (item.kind === 'sep') {
-      pieces.push({ type: 'sep', size: item.size })
-      continue
+export function parseTemplateTokens(template: string): StatsLineToken[] {
+  const tokens: StatsLineToken[] = []
+  let text = ''
+  let i = 0
+  const flush = (): void => {
+    if (text !== '') {
+      tokens.push({ type: 'text', text })
+      text = ''
     }
-    const text = item.kind === 'custom' ? (item.template.trim() === '' ? undefined : renderTemplate(item.template, values)) : parts[item.kind]
-    if (text !== undefined) pieces.push({ type: 'text', text })
   }
-  // 收敛:边缘删除 + 相邻留大(small < big)
-  const out: StatsLinePiece[] = []
-  for (const piece of pieces) {
-    const last = out[out.length - 1]
-    if (piece.type === 'sep') {
-      if (last === undefined) continue // 前缘
-      if (last.type === 'sep') {
-        if (piece.size === 'big') out[out.length - 1] = piece // 留大的
+  while (i < template.length) {
+    if (template[i] === '$') {
+      const match = /^\$([A-Za-z][A-Za-z0-9]*)/.exec(template.slice(i))
+      if (match !== null) {
+        flush()
+        tokens.push({ type: 'ref', name: match[1] ?? '' })
+        i += match[0].length
         continue
       }
+      if (template[i + 1] === '$') {
+        text += '$'
+        i += 2
+        continue
+      }
+      // 孤立 $:字面文本
+      text += '$'
+      i += 1
+      continue
     }
-    out.push(piece)
+    text += template[i]
+    i += 1
   }
-  while (out.length > 0 && out[out.length - 1].type === 'sep') out.pop() // 后缘
+  flush()
+  return tokens
+}
+
+/** token 序列 → 模板串;文本中的 $ 一律转义为 $$,ref 输出 $name。 */
+export function serializeTokens(tokens: StatsLineToken[]): string {
+  return tokens.map((token) => (token.type === 'ref' ? `$${token.name}` : token.text.replace(/\$/g, () => '$$'))).join('')
+}
+
+/**
+ * 解析模板:任一 ref 在 values 中缺失(undefined)→ 整个串不可解析,
+ * 返回 undefined(这就是声明式的条件显隐);否则返回替换后的文本。
+ */
+export function resolveTemplate(template: string, values: Record<string, string | undefined>): string | undefined {
+  const tokens = parseTemplateTokens(template)
+  for (const token of tokens) {
+    if (token.type === 'ref' && values[token.name] === undefined) return undefined
+  }
+  return tokens.map((token) => (token.type === 'ref' ? (values[token.name] ?? '') : token.text)).join('')
+}
+
+/** 渲染输出:文本段(可带 hint → span 的 title)或幽灵分隔符段。 */
+export type StatsLinePiece = { type: 'text'; text: string; hint?: string } | { type: 'sep'; text: string; section: boolean }
+
+/**
+ * sections + 值词表 → 渲染片段。连接符按层级生成:组件前插入其小组的
+ * sep('' 则不生成,贴死),小组第一个渲染组件前插入 '|';行首无连接符。
+ * 不可解析的组件与全空小组直接消失,没有收敛 pass。
+ */
+export function renderStatsLine(sections: StatsLineSection[], values: Record<string, string | undefined>): StatsLinePiece[] {
+  const pieces: StatsLinePiece[] = []
+  let lineStarted = false
+  for (const section of sections) {
+    const sep = section.sep ?? '·'
+    let sectionStarted = false
+    for (const component of section.components) {
+      const show = typeof component === 'string' ? component : component.show
+      const hint = typeof component === 'string' ? undefined : component.hint
+      const text = resolveTemplate(show, values)
+      if (text === undefined) continue
+      const hintText = hint === undefined ? undefined : resolveTemplate(hint, values)
+      if (lineStarted) {
+        const junction = sectionStarted ? sep : '|'
+        if (junction !== '') pieces.push({ type: 'sep', text: junction, section: !sectionStarted })
+      }
+      pieces.push({ type: 'text', text, ...(hintText !== undefined ? { hint: hintText } : {}) })
+      lineStarted = true
+      sectionStarted = true
+    }
+  }
+  return pieces
+}
+
+/** 防御性归一化任意 JSON 为 sections;非法条目丢弃,空小组丢弃。 */
+export function normalizeSections(raw: unknown): StatsLineSection[] {
+  if (!Array.isArray(raw)) return []
+  const out: StatsLineSection[] = []
+  for (const s of raw) {
+    if (typeof s !== 'object' || s === null) continue
+    const rec = s as Record<string, unknown>
+    const comps = Array.isArray(rec.components) ? rec.components : []
+    const components: StatsLineComponent[] = []
+    for (const c of comps) {
+      if (typeof c === 'string') {
+        if (c !== '') components.push(c)
+        continue
+      }
+      if (typeof c === 'object' && c !== null) {
+        const r = c as Record<string, unknown>
+        if (typeof r.show === 'string' && r.show !== '') {
+          components.push(typeof r.hint === 'string' && r.hint !== '' ? { show: r.show, hint: r.hint } : { show: r.show })
+        }
+      }
+    }
+    if (components.length === 0) continue
+    out.push(typeof rec.sep === 'string' ? { sep: rec.sep, components } : { components })
+  }
   return out
+}
+
+// ── 旧 items 文档迁移(兜底;当前用户配置为干净状态) ────────────────────
+
+const LEGACY_TEMPLATES: Record<string, string[]> = {
+  counts: ['$turns', '$steps'],
+  llm: ['LLM $llm'],
+  tools: ['工具 $tools'],
+  ttft: ['TTFT $ttft'],
+  tps: ['$tps'],
+  ttftLast: ['TTFT $ttftLast'],
+  tpsLast: ['$tpsLast'],
+  cost: ['$cost'],
+}
+
+/**
+ * 旧 items 序列(kind/sep/custom,'{name}' 占位)→ 新 sections。
+ * big sep = 小组边界;small sep 丢弃(小组内自动生成 '·');tokens 复合
+ * 组件展开为独立贴死小组(sep:'');custom 模板的 '{name}' 转 '$name'。
+ */
+export function migrateLegacyItems(raw: unknown): StatsLineSection[] {
+  if (!Array.isArray(raw)) return []
+  const sections: StatsLineSection[] = []
+  let current: StatsLineComponent[] = []
+  const flush = (): void => {
+    if (current.length > 0) {
+      sections.push({ components: current })
+      current = []
+    }
+  }
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue
+    const r = item as Record<string, unknown>
+    if (r.kind === 'sep') {
+      if (r.size === 'big') flush()
+      continue
+    }
+    if (r.kind === 'tokens') {
+      flush()
+      sections.push({ sep: '', components: ['↑$input', '($cache)', ' ↓$output'] })
+      continue
+    }
+    if (r.kind === 'custom') {
+      if (typeof r.template === 'string' && r.template.trim() !== '') {
+        current.push(r.template.replace(/\{(\w+)\}/g, '$$$1'))
+      }
+      continue
+    }
+    const templates = typeof r.kind === 'string' ? LEGACY_TEMPLATES[r.kind] : undefined
+    if (templates !== undefined) current.push(...templates)
+  }
+  flush()
+  return sections
 }

@@ -19,9 +19,19 @@ monorepo 里目前三个包:**dsh-session-cost**(host 端 `sessionCost` 投影 +
 
 ## 声明式配置:两个 settings 命名空间
 
-两个包各拥有一个 settings 命名空间,按用户面对的功能域命名,不用包名:**stats-line**(组件序列 `items` + `css`,dsh-stats-line)与 **session-cost**(`currency`/`exchangeRate`/`decimals`/`symbol`,dsh-session-cost)。共同的机制:值分层 **schemastery schema 默认(哨兵)< loader 行 config(base 层)< 用户层**;用户在 设置 → 插件 的卡片里编辑(`settings.plugin.item`,key = 命名空间),或直接编辑 `settings.yaml`,经 `settingsScope` 实时生效,不落盘重启。哨兵值(空串/0/-1)表示"未设置",回落到下一层。宿主端消费走 `ctx.inject(['settings'])` + **try/catch**(存量段落非法时 register 抛错,回落 base,GUI 卡片自动隐藏)。
+两个包各拥有一个 settings 命名空间,按用户面对的功能域命名,不用包名:**stats-line**(`sections` + `style`,dsh-stats-line)与 **session-cost**(`currency`/`exchangeRate`/`decimals`/`symbol`,dsh-session-cost)。共同的机制:值分层 **schemastery schema 默认(哨兵)< loader 行 config(base 层)< 用户层**;用户在 设置 → 插件 的卡片里编辑(`settings.plugin.item`,key = 命名空间),或直接编辑 `settings.yaml`,经 `settingsScope` 实时生效,不落盘重启。哨兵值(空串/0/-1)表示"未设置",回落到下一层。宿主端消费走 `ctx.inject(['settings'])` + **try/catch**(存量段落非法时 register 抛错,回落 base,GUI 卡片自动隐藏)。
 
-stats-line 的用户面是**组件序列**:内置数据组件(`counts`/`llm`/`tools`/`ttft`/`tps`/`ttftLast`/`tpsLast`/`tokens`/`cost`)。`ttft`/`tps` 显示**最近一轮为主、平均值带标签缀后**(`TTFT 0.9s (avg 1.2s)` / `53 tok/s (avg 45)`——主值贴身带单位,括号隔开主值和单位太丑被否了)——最近值反映当前服务状况,平均值当基线;最近读数不可得(投影路径/窗口折叠)退回纯平均。`*Last` 是纯最近变体。最近读数始终从窗口节点读取——sessionStats 投影不含逐步数据)、分隔符(`sep`,small '·' / big '|')与自定义模板组件(`custom`,`{placeholder}` 插值,占位符为预格式化显示值)。数据不可得的组件不渲染(包括未装 session-cost 时的 cost),**分隔符自动收敛**(边缘删除、相邻留大)——这就是声明式的条件显隐;设置 GUI 里的卡片是可拖拽编排器(拖动排序、点分隔符切大小),带示例数据实时预览。`css` 是高级区逃生舱。边界纪律:自定义模板只插值、无逻辑语法;新组件种类去改 client。
+stats-line 的用户面是**模板组件模型**,四层概念:值(ref)/ 组件 / 小组(section)/ 行。
+
+**组件 = 一个模板字符串**(`'LLM $llm'`),串内 `$name` 引用值词表(`$$` 转义字面 `$`,词法 `$[A-Za-z][A-Za-z0-9]*`);需要 tooltip 时用对象形态 `{ show, hint? }`(hint 同规则,渲染为 span 原生 `title`)。小组 = `{ sep?, components }`,`sep` 覆盖内部连接符(默认 `·`,`''` 贴死,如 tokens 小组 `['↑$input', '($cache)', ' ↓$output']`);小组间固定 `|`。**值纯化**:值 = 数 + 内在单位(轮/步随 locale;s/tok/s/% 烘死)+ 认识论标记(≈)+ 币种符号(¥)——箭头、标签、括号、连接符全部在配置层。
+
+**消失规则逐级生效,无收敛 pass**:ref 无数据 → 模板不可解析;show 不可解析 → 组件消失;hint 不可解析 → 仅丢 hint;小组全空 → 整组消失;连接符渲染时按层级生成(组件/小组死亡即不生成,不存在孤儿分隔符)。被否方案记录:手动 sep 节点(需要收敛算法擦屁股)、`{text}`/`{value}` 对象部件(丑且非所见即所得)、`optional` 子组与 prefix/suffix(为单一用例付通用性的钱,被容器级 sep 取代)、@ 标记(YAML 保留指示符,必须加引号)。
+
+**默认序列**(`sections=[]` 哨兵时 client 侧按 locale 生成):`5 轮 · 23 步 | LLM 2m42s · 工具 45s | TTFT 0.9s · 53 tok/s | ↑8.4M(97%) ↓68.8K | ≈¥0.0082`。ttft/tps 默认显示**最近一轮**(`$ttftLast`/`$tpsLast`,与官方 thread 末端 deriveTurnMetrics 同构的轮 fold,最近读数始终从窗口节点读取——sessionStats 投影不含逐步数据),窗口平均进 hint(`avg 1.2s`);括号分隔主值的写法被否(太丑),裸 last-only 丢基线被否。
+
+**样式**收敛为五个专门 key(`style.fontSize/color/fontFamily/gap/sectionGap`)→ root 内联样式 + `--dsl-*` 变量消费,结构上不可能泄漏到行外,非法值被 CSS 解析器静默丢弃。原始 `css` 逃生舱已删(全局 `<style>` 火力远超行级配置)。CSS 类名统一 `dsl-` 前缀,是稳定公开锚点(一包一前缀、发版不改名)。
+
+设置 GUI 是 **chip 编排器**:chip 是模板串 parse 出的 token 视图(文本片/值片),存储模型与编辑视图经 parse/serialize 无损互转;调色板按领域分组插入 `$ref`,文本片单击行内编辑,拖拽调组件顺序,小组圈头改 sep;预览与线上 cell 共享同一条 renderStatsLine 路径。边界纪律:模板只插值、永不做逻辑语法(条件/循环);新值去 buildVocabulary 加词表条目。
 
 币种曾是 stats-line cost 组件项的属性;拆包后归还给费用数据的 owner(session-cost 命名空间)——消费方(stats-line)不该拥有数据源的显示配置。session-cost 宿主端从自己的命名空间驱动汇率解析(scope.watch → 即时重解析,见上节),解析结果随 view 下发,消费方无需 config 通道。
 
@@ -50,4 +60,4 @@ stats-line 的用户面是**组件序列**:内置数据组件(`counts`/`llm`/`to
 
 - 价表硬编码,无官方同步;stats-line 客户端装了 dsh-cost-meter 时仍自动优先其 `costUsage` 投影。
 - 在线汇率刷新后,客户端要到下一次投影变更/刷新页面才看到新汇率(view 无独立推送);离线时回退内置表(2026-08 参考值,会漂移)。
-- 远期方向:provider registry——第三方插件向 stats-line 注册自己的投影组件(服务注册表 + items 的 provider 逃生种类),stats-line 从"一个显示条"变成"迷你平台";session-cost 是它的第一个 provider 形态。
+- 远期方向:provider registry——第三方插件向 stats-line 注册自己的值(display 词表条目;session-cost 的 `display.cost` 已是该契约的雏形:数据 owner 格式化,stats-line 原样摆放),stats-line 从“一个显示条”变成“迷你平台”;session-cost 是它的第一个 provider 形态。

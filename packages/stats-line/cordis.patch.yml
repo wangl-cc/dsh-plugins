@@ -5,20 +5,16 @@
 # config(全部可选,缺省即可用;这里的值是 settings 命名空间 stats-line
 # 的 base 层——用户在 设置→插件→stats-line 或 settings.yaml 里的编辑会
 # 覆盖它,实时生效):
-#   ui: 声明式 stats line 定制——组件序列(数组简写)或对象全形
-#     { items, css }。非法配置整体回退默认。
-#     组件:counts / llm / tools / ttft / tps / ttftLast / tpsLast / tokens / cost(内置;
-#     sep(size: small '·' 或 big '|');custom(template 插值,占位符为
-#     预格式化显示值:{turns} {steps} {llm} {tools} {ttft} {tps} {input}
-#     {output} {cache} {cost} {ttftLast} {tpsLast})。数据不可得的组件不渲染,分隔符自动收敛。
-#     cost 组件的数据与币种配置来自 dsh-session-cost 插件(未安装则不渲染)。
-#     例:
-#       ui:
-#         - { kind: counts }
-#         - { kind: sep, size: big }
-#         - { kind: custom, template: '↑{input}{cache} ↓{output}' }
-#         - { kind: sep, size: big }
-#         - { kind: cost }
+#   ui: 旧 items 形态的组件序列(数组或 { items }),经迁移展开为
+#     新模板组件模型的 sections;非法配置整体回退默认。
+# 模型:行 = 小组数组(小组间固定 '|');小组 = { sep?, components }
+#   (sep 覆盖内部连接符,默认 '·','' 贴死);组件 = 模板字符串
+#   ('LLM $llm',$name 引用值,$$ 转义)或 { show, hint? }。值词表:
+#   $turns $steps $llm $tools $ttft $tps $ttftLast $tpsLast $input
+#   $output $cache $cost。值不可得 → 组件消失;小组全空 → 整组消失;
+#   连接符渲染时生成。$cost 的数据与格式化来自 dsh-session-cost(未
+#   安装则引用它的组件自动不渲染)。
 - insert:
     - id: stats-line
       name: dsh-stats-line
+      config: {}

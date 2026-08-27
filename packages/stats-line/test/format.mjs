@@ -1,21 +1,20 @@
-// 共享纯函数(format.ts → dist/format.js)的测试:格式化、币种解析、节点折叠。
-// 这些函数被 client bundle 内联使用——这里测的就是线上跑的那份逻辑。
+// 共享纯函数(format.ts → dist/format.js)的测试:格式化、节点折叠、
+// 模板组件模型。这些函数被 client bundle 内联使用——这里测的就是线上
+// 跑的那份逻辑。
 import {
   lastStepReading,
   billedInputTokens,
   cacheHitPercent,
   deriveStats,
   formatDuration,
-  formatMoney,
   formatTokens,
   formatTokensPerSecond,
-  interpolate,
-  renderTemplate,
-  renderStatsLineItems,
-  normalizeItem,
-  makeItem,
-  DEFAULT_STATS_LINE_ITEMS,
-  resolveCurrency,
+  parseTemplateTokens,
+  serializeTokens,
+  resolveTemplate,
+  renderStatsLine,
+  normalizeSections,
+  migrateLegacyItems,
 } from '../dist/format.js'
 
 let failures = 0
@@ -45,42 +44,60 @@ check('billedInputTokens 三桶求和', billedInputTokens(usage) === 1000)
 check('cacheHitPercent 取整', cacheHitPercent(usage) === 90)
 check('cacheHitPercent 零输入为 null', cacheHitPercent({ uncachedInputTokens: 0, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 }) === null)
 
-// resolveCurrency:缺省 CNY;汇率非法回退 preset;custom 币种用 symbol
-check('缺省 CNY', resolveCurrency(undefined).symbol === '¥' && resolveCurrency(undefined).rate === 7.2)
-check('非法汇率回退', resolveCurrency({ currency: 'USD', exchangeRate: -1 }).rate === 1)
-check('custom 符号', resolveCurrency({ currency: 'custom', symbol: '€', exchangeRate: 0.9, decimals: 2 }).symbol === '€')
-check('币种码小写归一化为大写', resolveCurrency({ currency: 'eur' }).symbol === '€')
+// ── 模板引擎:$name 插值,$$ 转义,孤立 $ 字面 ──
+check('parse 文本与 ref 交替', JSON.stringify(parseTemplateTokens('TTFT $ttft')) === JSON.stringify([{ type: 'text', text: 'TTFT ' }, { type: 'ref', name: 'ttft' }]))
+check('parse $$ 为字面 $', JSON.stringify(parseTemplateTokens('$$5')) === JSON.stringify([{ type: 'text', text: '$5' }]))
+check('parse 孤立 $ 字面', JSON.stringify(parseTemplateTokens('a$')) === JSON.stringify([{ type: 'text', text: 'a$' }]))
+check('parse 紧贴标点', JSON.stringify(parseTemplateTokens('($cache)')) === JSON.stringify([{ type: 'text', text: '(' }, { type: 'ref', name: 'cache' }, { type: 'text', text: ')' }]))
+check('serialize 转义 $', serializeTokens([{ type: 'text', text: '$5' }, { type: 'ref', name: 'cost' }]) === '$$5$cost')
+check('parse/serialize 幂等', serializeTokens(parseTemplateTokens('avg $tps · $$x')) === 'avg $tps · $$x')
+check('resolveTemplate 插值', resolveTemplate('↑$input ($cache)', { input: '8.4M', cache: '97%' }) === '↑8.4M (97%)')
+check('resolveTemplate 缺失值整个不解析', resolveTemplate('≈$cost', {}) === undefined)
+check('resolveTemplate 空串值照常渲染', resolveTemplate('[$cache]', { cache: '' }) === '[]')
 
-// interpolate:占位符替换;未知占位符保留
-check('interpolate 替换', interpolate('{turns} 轮 · {steps} 步', { turns: 5, steps: 23 }) === '5 轮 · 23 步')
-check('interpolate 未知占位符保留', interpolate('{a}/{b}', { a: 1 }) === '1/{b}')
+// ── renderStatsLine:消失规则与幽灵连接符 ──
+const vals = { turns: '5 轮', steps: '23 步', llm: '2m42s', input: '8.4M', cache: '97%', output: '68.8K' }
+const sections = [
+  { components: ['$turns', '$steps'] },
+  { components: ['LLM $llm', '工具 $tools'] },   // tools 缺失 → 组件消失
+  { sep: '', components: ['↑$input', '($cache)', ' ↓$output'] },
+  { components: ['$cost'] },                      // cost 缺失 → 整组消失
+]
+check('渲染序列文本', renderStatsLine(sections, vals).map((p) => p.text).join('') === '5 轮·23 步|LLM 2m42s|↑8.4M(97%) ↓68.8K')
+check('渲染:连接符层级标记正确', (() => { const ps = renderStatsLine(sections, vals); return ps[1].type === 'sep' && ps[1].section === false && ps[3].type === 'sep' && ps[3].section === true })())
+check('空小组消失且无孤儿 |', renderStatsLine([{ components: ['$cost'] }, { components: ['$turns'] }], vals).map((p) => (p.type === 'sep' ? '|' : p.text)).join('') === '5 轮')
+check('行首无连接符', renderStatsLine([{ components: ['$turns'] }], vals)[0].type === 'text')
+check('全部缺失为空', renderStatsLine([{ components: ['$cost'] }], vals).length === 0)
+check('cache 缺失时括号组件死、两侧贴死保留', renderStatsLine([{ sep: '', components: ['↑$input', '($cache)', ' ↓$output'] }], { input: '8.4M', output: '68.8K' }).map((p) => p.text).join('') === '↑8.4M ↓68.8K')
+// hint:独立全有全无;组件可得但 hint 引用缺失 → 仅丢 hint
+const hinted = renderStatsLine([{ components: [{ show: '$tpsLast', hint: 'avg $tps' }] }], { tpsLast: '53 tok/s' })
+check('hint 缺失时仅丢 hint', hinted.length === 1 && hinted[0].text === '53 tok/s' && hinted[0].hint === undefined)
+check('hint 可得时随组件渲染', renderStatsLine([{ components: [{ show: '$tpsLast', hint: 'avg $tps' }] }], { tpsLast: '53 tok/s', tps: '45 tok/s' })[0].hint === 'avg 45 tok/s')
+check('组件缺失 hint 连带消失', renderStatsLine([{ components: [{ show: '$nope', hint: 'avg $tps' }] }], { tps: '45' }).length === 0)
 
-// renderTemplate:引用缺失值的模板返回 undefined;空串占位符照常渲染
-const vals = { turns: '5', steps: '23', input: '8.4M', output: '68.8K', cache: '(97%)', cost: undefined }
-check('renderTemplate 缺失值丢弃', renderTemplate('费用 {cost}', vals) === undefined)
-check('renderTemplate 正常插值', renderTemplate('{turns} turns · {steps} steps', vals) === '5 turns · 23 steps')
-check('renderTemplate 空串占位符渲染', renderTemplate('↑{input}{cache}', { input: '8.4M', cache: '' }) === '↑8.4M')
+// ── normalizeSections:防御性归一化 ──
+check('normalize 非法条目丢弃', JSON.stringify(normalizeSections([{ components: ['$a', 3, null, '', { show: '$b', hint: 1 }, { show: '' }] }])) === JSON.stringify([{ components: ['$a', { show: '$b' }] }]))
+check('normalize 空小组丢弃', normalizeSections([{ components: [] }, { components: ['$a'] }]).length === 1)
+check('normalize 保留 sep', normalizeSections([{ sep: '', components: ['$a'] }])[0].sep === '')
+check('normalize 非数组为空', normalizeSections('bogus').length === 0)
 
-// renderStatsLineItems:不可得组件消失 + 分隔符收敛(边缘删除,相邻留大)
-const parts = { counts: '5 turns', llm: 'LLM 2m42s', tps: '45 tok/s', tokens: '↑8.4M ↓68.8K' }
-const pieceText = (p) => (p.type === 'sep' ? `sep:${p.size}` : p.text)
-const seq = [makeItem('counts'), makeItem('sep', { size: 'big' }), makeItem('llm'), makeItem('sep'), makeItem('tools'), makeItem('sep', { size: 'big' }), makeItem('tps')]
-check('缺失组件消失且小分隔符被大分隔符吸收', renderStatsLineItems(seq, parts, {}).map(pieceText).join(',') === '5 turns,sep:big,LLM 2m42s,sep:big,45 tok/s')
-check('边缘分隔符删除', renderStatsLineItems([makeItem('sep'), makeItem('counts'), makeItem('sep', { size: 'big' })], parts, {}).map(pieceText).join(',') === '5 turns')
-check('自定义模板插值', renderStatsLineItems([makeItem('custom', { template: 'T={turns}' })], {}, { turns: '5' })[0].text === 'T=5')
-check('自定义模板引用缺失值丢弃', renderStatsLineItems([makeItem('custom', { template: 'T={nope}' }), makeItem('counts')], parts, {}).length === 1)
-check('空模板自定义组件丢弃', renderStatsLineItems([makeItem('custom'), makeItem('counts')], parts, {}).length === 1)
-check('全部不可达为空', renderStatsLineItems([makeItem('cost'), makeItem('sep')], {}, {}).length === 0)
-
-// normalizeItem:非法输入丢弃,字段哨兵归一
-check('normalizeItem 非法 kind 丢弃', normalizeItem({ kind: 'bogus' }) === undefined && normalizeItem('x') === undefined)
-check('normalizeItem 字段归一', JSON.stringify(normalizeItem({ kind: 'cost', size: 'bogus', template: 3 })) === JSON.stringify(makeItem('cost')))
-check('默认序列首尾', DEFAULT_STATS_LINE_ITEMS[0].kind === 'counts' && DEFAULT_STATS_LINE_ITEMS.at(-1).kind === 'cost' && DEFAULT_STATS_LINE_ITEMS.length === 13)
-
-// formatMoney:汇率换算、小数裁剪、过小自动放宽
-check('formatMoney 换汇', formatMoney(0.5, { symbol: '¥', rate: 7.2, decimals: 4 }) === '¥3.6')
-check('formatMoney 尾零裁剪', formatMoney(1 / 8, { symbol: '$', rate: 1, decimals: 4 }) === '$0.125')
-check('formatMoney 过小放宽', formatMoney(0.000001, { symbol: '$', rate: 1, decimals: 4 }) === '$0.000001')
+// ── 旧 items 迁移 ──
+const migrated = migrateLegacyItems([
+  { kind: 'counts', size: 'small', template: '' },
+  { kind: 'sep', size: 'big', template: '' },
+  { kind: 'llm', size: 'small', template: '' },
+  { kind: 'sep', size: 'small', template: '' },
+  { kind: 'custom', size: 'small', template: 'T={turns}' },
+  { kind: 'sep', size: 'big', template: '' },
+  { kind: 'tokens', size: 'small', template: '' },
+  { kind: 'sep', size: 'big', template: '' },
+  { kind: 'cost', size: 'small', template: '' },
+])
+check('迁移:big sep 分小组', migrated.length === 4)
+check('迁移:counts 展开为两组件', JSON.stringify(migrated[0].components) === JSON.stringify(['$turns', '$steps']))
+check('迁移:custom 模板 {name} → $name', migrated[1].components[1] === 'T=$turns')
+check('迁移:tokens 为贴死小组', migrated[2].sep === '' && JSON.stringify(migrated[2].components) === JSON.stringify(['↑$input', '($cache)', ' ↓$output']))
+check('迁移:非数组为空', migrateLegacyItems('bogus').length === 0)
 
 // deriveStats:assistant/tool-result 折叠
 const nodes = [
